@@ -172,6 +172,20 @@ app web-monitor {
     index observed_idx using sorted (observedAt)
   }
 
+  collection Observations {
+    id: uuid
+    tenantId: text
+    observedAt: datetime
+    subject: json
+    executor: json
+    source: json
+    values: json
+    evidence: json
+    provenance: json
+    index tenant_idx using hash (tenantId)
+    index observed_idx using sorted (observedAt)
+  }
+
   collection MonitorTriggeredEvents {
     id: uuid
     type: text

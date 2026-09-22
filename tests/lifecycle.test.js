@@ -19,6 +19,7 @@ function createMockApp(overrides = {}) {
   const store = {
     Monitors: new Map(),
     MonitorObservations: new Map(),
+    Observations: new Map(),
     PendingObservations: new Map(),
     MonitorTriggeredEvents: new Map(),
     MonitorExecutionEvidence: new Map(),
@@ -254,8 +255,9 @@ test('Session expiration lifecycle (ACTIVE -> AUTHENTICATION_REQUIRED -> notific
   assert.equal(notifications[0].type, 'monitor.auth_expired');
   assert.equal(notifications[0].channel, 'browser');
   const expiredObservations = await app.state.collection('MonitorObservations').find({ monitorId });
-  assert.equal(expiredObservations[0].observation.authentication, 'authentication_required');
-  assert.equal(expiredObservations[0].evaluation.triggered, false);
+  assert.equal(expiredObservations.length, 0);
+  assert.equal((await app.state.collection('Observations').find({ tenantId })).length, 0);
+  assert.equal((await app.state.collection('MonitorExecutionEvidence').find({ monitorId })).length, 1);
 
   // 2. User re-authenticates and next check succeeds
   const pendingId2 = 'pending-auth-2';
@@ -342,6 +344,9 @@ test('Session expiration lifecycle with explicit authentication_required (ACTIVE
   assert.equal(monitorExpired.executionState, 'authentication_required');
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, 'monitor.auth_expired');
+  assert.equal((await app.state.collection('MonitorObservations').find({ monitorId })).length, 0);
+  assert.equal((await app.state.collection('Observations').find({ tenantId })).length, 0);
+  assert.equal((await app.state.collection('MonitorExecutionEvidence').find({ monitorId })).length, 1);
 
   // 2. User re-authenticates and next check succeeds
   const pendingId2 = 'pending-auth-explicit-2';
@@ -594,9 +599,9 @@ test('Service executor persists canonical observations and preserves evaluation 
 
   const observations = [...store.MonitorObservations.values()];
   assert.equal(observations.length, 1);
-  assert.equal(observations[0].observation.executor, 'service');
+  assert.equal(observations[0].observation.executor.mode, 'service');
   assert.equal(observations[0].observation.executionMode, 'service');
-  assert.equal(observations[0].observation.subject, 'https://api.example.com/price');
+  assert.equal(observations[0].observation.subject.id, 'https://api.example.com/price');
   assert.equal(observations[0].observation.values.numericValue, 450);
   assert.equal(observations[0].observation.numericValue, 450);
   assert.equal(observations[0].evaluation.triggered, true);
@@ -833,6 +838,12 @@ test('Equivalent browser and service observations produce equivalent evaluations
   const serviceObservation = [...store.MonitorObservations.values()].find((item) => item.monitorId === 'service-equivalence');
   assert.deepEqual(browserObservation.evaluation, serviceObservation.evaluation);
   assert.equal(browserObservation.evaluation.triggered, true);
+  assert.equal(browserObservation.observation.provenance.observationMethod, 'browser_page');
+  assert.equal(serviceObservation.observation.provenance.observationMethod, 'http_request');
+  assert.notEqual(
+    browserObservation.observation.executor.mode,
+    serviceObservation.observation.executor.mode
+  );
 });
 
 test('Service monitor creation stores only authorization context, not credentials', async () => {
@@ -872,4 +883,65 @@ test('Service monitor creation stores only authorization context, not credential
   assert.equal(JSON.stringify(savedMonitor).includes('super-secret'), false);
   assert.equal(JSON.stringify(savedMonitor).includes('alice'), false);
   assert.equal(savedMonitor.execution.authorizationContext, 'inventory-auth');
+});
+
+test('Canonical observations are retry-idempotent, historical, and cursor-queryable', async () => {
+  const { app, store } = createMockApp({
+    fetch: async () => createResponse({
+      status: 200,
+      body: { status: 'Ready' }
+    })
+  });
+  const routes = createMonitorRoutes(app);
+  const subject = {
+    type: 'github_issue',
+    id: 'acme/project/issues/42',
+    locator: 'https://api.github.com/repos/acme/project/issues/42'
+  };
+  const monitor = {
+    id: 'monitor-canonical',
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: subject.locator,
+    pageTitle: 'Issue',
+    condition: { type: 'text_appears', text: 'Ready' },
+    target: { path: 'status', subject },
+    execution: { mode: 'service' },
+    executionMode: 'service',
+    executionState: 'available',
+    status: 'active'
+  };
+  await app.state.collection('Monitors').insert(monitor, monitor.id);
+
+  await runMonitorCheck(app, { id: 'job-retry', payload: { monitorId: monitor.id } });
+  await runMonitorCheck(app, { id: 'job-retry', payload: { monitorId: monitor.id } });
+  assert.equal(store.Observations.size, 1);
+  assert.equal([...store.Observations.values()][0].provenance.observationMethod, 'http_request');
+
+  await runMonitorCheck(app, { id: 'job-later', payload: { monitorId: monitor.id } });
+  assert.equal(store.Observations.size, 2);
+
+  const firstPage = await routes['GET /api/observations']({
+    tenantId: 'test-tenant',
+    principal: { principalId: 'user-123', scopes: ['monitors.read'] },
+    request: {
+      url: `/api/observations?subject=${encodeURIComponent(JSON.stringify(subject))}&limit=1`
+    }
+  });
+  assert.equal(firstPage.items.length, 1);
+  assert.ok(firstPage.nextCursor);
+
+  const secondPage = await routes['GET /api/observations']({
+    tenantId: 'test-tenant',
+    principal: { principalId: 'user-123', scopes: ['monitors.read'] },
+    request: { url: `/api/observations?cursor=${firstPage.nextCursor}&limit=1` }
+  });
+  assert.equal(secondPage.items.length, 1);
+  assert.notEqual(firstPage.items[0].id, secondPage.items[0].id);
+  const latest = await routes['GET /api/observations/latest']({
+    tenantId: 'test-tenant',
+    principal: { principalId: 'user-123', scopes: ['monitors.read'] },
+    request: { url: `/api/observations/latest?subject=${encodeURIComponent(JSON.stringify(subject))}` }
+  });
+  assert.equal(latest.item.id, firstPage.items[0].id);
 });
