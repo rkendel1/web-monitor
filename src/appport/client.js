@@ -93,6 +93,12 @@ export const appPortClient = {
       body: JSON.stringify(body)
     });
   },
+  heartbeat(executionMode = 'authenticated_browser', executorId = 'authenticated-browser') {
+    return request('/api/executors/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ executionMode, executorId })
+    });
+  },
   listUnreadNotifications() {
     return request('/_appport/notifications?unread=true&limit=25');
   },

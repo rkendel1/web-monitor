@@ -3,11 +3,18 @@ import { conditionLabel, normalizeInterval, parseConditionInput } from '../share
 import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateObservation, observeHtml } from './observation.js';
 import { createNotificationEvent } from './notifications.js';
+import {
+  EXECUTION_MODES,
+  EXECUTION_STATES,
+  createAuthenticatedBrowserExecutor,
+  recordExecutorHeartbeat
+} from './executors.js';
 
 const MONITORS = 'Monitors';
 const OBSERVATIONS = 'MonitorObservations';
 const PENDING_OBSERVATIONS = 'PendingObservations';
 const TRIGGER_EVENTS = 'MonitorTriggeredEvents';
+const EXECUTION_EVIDENCE = 'MonitorExecutionEvidence';
 
 function collection(application, name) {
   return application.state.collection(name);
@@ -24,9 +31,6 @@ function monitorStatus(monitor, nextTriggered, observation) {
   }
   if (monitor.status === 'paused') {
     return 'paused';
-  }
-  if (normalizeAuthState(observation?.authentication) === 'authentication_required') {
-    return 'AUTHENTICATION_REQUIRED';
   }
   return nextTriggered ? 'triggered' : 'active';
 }
@@ -70,6 +74,32 @@ async function listObservations(application, tenantId, ownerId, monitorId) {
   return [...items].sort((left, right) => observationTimestamp(right).localeCompare(observationTimestamp(left)));
 }
 
+async function recordExecutionResult(application, monitor, result, options = {}) {
+  const attemptedAt = options.attemptedAt ?? new Date().toISOString();
+  const evidenceId = options.evidenceId ?? randomUUID();
+  const executionState = result.kind === 'unavailable'
+    ? EXECUTION_STATES.UNAVAILABLE
+    : result.kind === 'error'
+      ? EXECUTION_STATES.ERROR
+      : result.kind;
+  await collection(application, EXECUTION_EVIDENCE).insert({
+    id: evidenceId,
+    monitorId: monitor.id,
+    tenantId: monitor.tenantId,
+    ownerId: monitor.ownerId,
+    executionMode: monitor.executionMode,
+    executionState,
+    attemptedAt,
+    reason: result.reason,
+    ...(options.executorId ? { executorId: options.executorId } : {})
+  }, evidenceId);
+  await collection(application, MONITORS).update(monitor.id, {
+    updatedAt: attemptedAt,
+    executionState,
+    lastExecutionAttemptAt: attemptedAt
+  });
+}
+
 function systemPrincipal(tenantId) {
   return {
     principalId: 'appport:web-monitor',
@@ -104,6 +134,9 @@ async function recordObservation(application, monitor, observation, evaluation, 
     lastObservation: observation,
     lastEvaluation: evaluation,
     status: nextStatus,
+    executionState: observation.authentication === 'authentication_required'
+      ? EXECUTION_STATES.AUTHENTICATION_REQUIRED
+      : EXECUTION_STATES.AVAILABLE,
     ...(evaluation.triggered ? { triggeredAt: observedAt } : {})
   };
 
@@ -113,11 +146,12 @@ async function recordObservation(application, monitor, observation, evaluation, 
     lastObservation: updatedMonitor.lastObservation,
     lastEvaluation: updatedMonitor.lastEvaluation,
     status: updatedMonitor.status,
+    executionState: updatedMonitor.executionState,
     ...(updatedMonitor.triggeredAt ? { triggeredAt: updatedMonitor.triggeredAt } : {})
   });
 
-  const previouslyAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
-  if (nextStatus === 'AUTHENTICATION_REQUIRED' && !previouslyAuthRequired) {
+  const previouslyAuthRequired = monitor.executionState === EXECUTION_STATES.AUTHENTICATION_REQUIRED;
+  if (updatedMonitor.executionState === EXECUTION_STATES.AUTHENTICATION_REQUIRED && !previouslyAuthRequired) {
     await createNotificationEvent(application, {
       tenantId: monitor.tenantId,
       recipient: monitor.ownerId,
@@ -131,14 +165,15 @@ async function recordObservation(application, monitor, observation, evaluation, 
         monitorId: monitor.id,
         url: monitor.url,
         condition: conditionLabel(monitor.condition),
-        status: 'AUTHENTICATION_REQUIRED',
+        status: EXECUTION_STATES.AUTHENTICATION_REQUIRED,
         deliveryPolicy: monitor.notificationPolicy ?? { channels: ['browser'] }
       },
     }, systemPrincipal(monitor.tenantId));
   }
 
   const previouslyTriggered = Boolean(monitor.lastEvaluation?.triggered);
-  if (!options.skipNotification && !previouslyTriggered && evaluation.triggered && nextStatus !== 'AUTHENTICATION_REQUIRED') {
+  if (!options.skipNotification && !previouslyTriggered && evaluation.triggered
+    && updatedMonitor.executionState !== EXECUTION_STATES.AUTHENTICATION_REQUIRED) {
     const summaryValue = observation.numericValue != null ? `$${observation.numericValue}` : observation.valueText || conditionLabel(monitor.condition);
     const deliveryPolicy = monitor.notificationPolicy ?? { channels: ['browser'] };
     const triggerId = createHash('sha256')
@@ -149,6 +184,7 @@ async function recordObservation(application, monitor, observation, evaluation, 
     if (await triggerCollection.get(triggerId)) {
       return;
     }
+
     const notification = await createNotificationEvent(application, {
       tenantId: monitor.tenantId,
       recipient: monitor.ownerId,
@@ -221,6 +257,11 @@ async function createMonitor(application, tenantId, principal, input) {
     createdAt,
     updatedAt: createdAt,
     observationMode: input.observationMode ?? 'public',
+    executionMode: input.executionMode
+      ?? (input.observationMode === 'authenticated_browser' ? EXECUTION_MODES.AUTHENTICATED_BROWSER : null),
+    executionState: input.executionMode || input.observationMode === 'authenticated_browser'
+      ? EXECUTION_STATES.UNAVAILABLE
+      : EXECUTION_STATES.AVAILABLE,
     authenticationState: normalizeAuthState(input.authenticationState ?? 'public'),
     notificationPolicy: {
       channels: [...new Set(
@@ -278,19 +319,24 @@ export async function runMonitorCheck(application, job) {
     return;
   }
 
-  if (monitor.observationMode === 'authenticated_browser') {
-    const pendingId = randomUUID();
-    await collection(application, PENDING_OBSERVATIONS).insert({
-      id: pendingId,
-      monitorId: monitor.id,
-      tenantId: monitor.tenantId,
-      ownerId: monitor.ownerId,
-      url: monitor.url,
-      condition: monitor.condition,
-      target: monitor.target,
-      createdAt: new Date().toISOString(),
-      jobId: job.id
-    }, pendingId);
+  if ((monitor.executionMode ?? monitor.observationMode) === EXECUTION_MODES.AUTHENTICATED_BROWSER) {
+    const executor = application.observationExecutors?.[EXECUTION_MODES.AUTHENTICATED_BROWSER]
+      ?? createAuthenticatedBrowserExecutor(application);
+    if (!await executor.isAvailable(monitor.tenantId)) {
+      await recordExecutionResult(application, monitor, { kind: 'unavailable', reason: 'browser_unavailable' }, {
+        attemptedAt: new Date().toISOString(),
+        executorId: executor.executorId
+      });
+      return;
+    }
+    const result = await executor.observe({ ...monitor, executionMode: EXECUTION_MODES.AUTHENTICATED_BROWSER });
+    if (result.kind !== 'observation') {
+      await recordExecutionResult(application, monitor, result, { executorId: executor.executorId });
+      return;
+    }
+    if (result.observation?.pendingId) {
+      await collection(application, PENDING_OBSERVATIONS).update(result.observation.pendingId, { jobId: job.id });
+    }
     return;
   }
 
@@ -343,11 +389,21 @@ export function createMonitorRoutes(application) {
     'POST /api/observations/submit': async ({ tenantId, principal, body }) => {
       const authenticated = requirePrincipal(principal);
       requireScope(authenticated, 'monitors.write');
-      const { pendingId, observation } = body ?? {};
-      if (!pendingId || !observation) {
-        throw Object.assign(new Error('pendingId and observation are required'), { status: 400, code: 'INVALID_INPUT' });
+      const { pendingId, observation, result } = body ?? {};
+      if (!pendingId || (!observation && !body?.result)) {
+        throw Object.assign(new Error('pendingId and observation or result are required'), { status: 400, code: 'INVALID_INPUT' });
       }
 
+      if (result?.kind === 'unavailable' || result?.kind === 'error') {
+        const pending = await collection(application, PENDING_OBSERVATIONS).get(pendingId);
+        if (!pending || pending.tenantId !== tenantId || pending.ownerId !== authenticated.principalId) {
+          throw Object.assign(new Error('Pending observation not found'), { status: 404, code: 'NOT_FOUND' });
+        }
+        const monitor = await collection(application, MONITORS).get(pending.monitorId);
+        await recordExecutionResult(application, monitor, result, { executorId: 'authenticated-browser' });
+        await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
+        return { ok: true };
+      }
       // Sanitize observation to ensure no credentials or secrets ever enter the state
       const {
         url, observedAt, execution, authentication,
@@ -419,6 +475,15 @@ export function createMonitorRoutes(application) {
       const authenticated = requirePrincipal(principal);
       requireScope(authenticated, 'monitors.write');
       return createMonitor(application, tenantId, authenticated, body ?? {});
+    },
+    'POST /api/executors/heartbeat': async ({ tenantId, principal, body }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.write');
+      return recordExecutorHeartbeat(application, {
+        tenantId,
+        executionMode: body?.executionMode,
+        executorId: body?.executorId
+      });
     },
     'POST /api/monitors/pause': async ({ tenantId, principal, body }) => {
       const authenticated = requirePrincipal(principal);
