@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { conditionLabel, normalizeInterval, parseConditionInput } from '../shared/conditions.js';
 import { normalizeAuthState } from '../shared/auth-detection.js';
-import { evaluateObservation, observeHtml } from './observation.js';
+import { evaluateObservation } from './observation.js';
 import { createNotificationEvent } from './notifications.js';
 import {
   EXECUTION_MODES,
   EXECUTION_STATES,
   createAuthenticatedBrowserExecutor,
+  createObservationExecutorRegistry,
+  createServiceObservationExecutor,
   recordExecutorHeartbeat
 } from './executors.js';
 
@@ -56,6 +58,59 @@ function observationTimestamp(item) {
   return item.observedAt ?? item.createdAt ?? new Date().toISOString();
 }
 
+function resolveExecutionMode(monitor) {
+  return monitor.execution?.mode
+    ?? monitor.executionMode
+    ?? (monitor.observationMode === 'authenticated_browser'
+      ? EXECUTION_MODES.AUTHENTICATED_BROWSER
+      : EXECUTION_MODES.SERVICE);
+}
+
+function normalizeObservationPayload(monitor, observation) {
+  const executionMode = observation.executionMode
+    ?? observation.execution
+    ?? resolveExecutionMode(monitor);
+
+  return {
+    ...observation,
+    execution: observation.execution ?? executionMode,
+    executor: observation.executor ?? executionMode,
+    executionMode,
+    subject: observation.subject ?? observation.url ?? monitor.url,
+    values: observation.values ?? {
+      ...(observation.valueText !== undefined ? { valueText: observation.valueText } : {}),
+      ...(observation.numericValue !== undefined ? { numericValue: observation.numericValue } : {}),
+      ...(observation.present !== undefined ? { present: observation.present } : {}),
+      ...(observation.selector !== undefined ? { selector: observation.selector } : {})
+    },
+    evidence: observation.evidence ?? {}
+  };
+}
+
+function createExecutorRegistry(application) {
+  if (application.observationExecutorRegistry?.resolve) {
+    return application.observationExecutorRegistry;
+  }
+
+  const registry = createObservationExecutorRegistry()
+    .register(application.observationExecutors?.[EXECUTION_MODES.AUTHENTICATED_BROWSER]
+      ?? createAuthenticatedBrowserExecutor(application))
+    .register(application.observationExecutors?.[EXECUTION_MODES.SERVICE]
+      ?? createServiceObservationExecutor(application));
+
+  for (const executor of Object.values(application.observationExecutors ?? {})) {
+    if (executor?.executionMode) {
+      registry.register(executor);
+    }
+  }
+
+  return registry;
+}
+
+function operationalResultReason(result) {
+  return result.reason ?? result.evidence?.reason ?? result.error?.code ?? 'executor_unavailable';
+}
+
 async function listOwnedMonitors(application, tenantId, ownerId) {
   const items = await collection(application, MONITORS).find({ tenantId, ownerId });
   return sortNewestFirst(items).filter((item) => !item.deletedAt);
@@ -87,10 +142,12 @@ async function recordExecutionResult(application, monitor, result, options = {})
     monitorId: monitor.id,
     tenantId: monitor.tenantId,
     ownerId: monitor.ownerId,
-    executionMode: monitor.executionMode ?? monitor.observationMode,
+    executionMode: resolveExecutionMode(monitor),
     executionState,
     attemptedAt,
-    reason: result.reason,
+    reason: operationalResultReason(result),
+    ...(result.evidence ? { evidence: result.evidence } : {}),
+    ...(result.error ? { error: result.error } : {}),
     ...(options.executorId ? { executorId: options.executorId } : {})
   }, evidenceId);
   await collection(application, MONITORS).update(monitor.id, {
@@ -257,11 +314,22 @@ async function createMonitor(application, tenantId, principal, input) {
     createdAt,
     updatedAt: createdAt,
     observationMode: input.observationMode ?? 'public',
-    executionMode: input.executionMode
+    execution: {
+      mode: input.execution?.mode
+        ?? input.executionMode
+        ?? (input.observationMode === 'authenticated_browser'
+          ? EXECUTION_MODES.AUTHENTICATED_BROWSER
+          : EXECUTION_MODES.SERVICE),
+      ...(input.execution?.authorizationContext
+        ? { authorizationContext: input.execution.authorizationContext }
+        : {})
+    },
+    executionMode: input.execution?.mode
+      ?? input.executionMode
       ?? (input.observationMode === 'authenticated_browser'
         ? EXECUTION_MODES.AUTHENTICATED_BROWSER
-        : EXECUTION_MODES.SERVER),
-    executionState: (input.executionMode ?? input.observationMode) === EXECUTION_MODES.AUTHENTICATED_BROWSER
+        : EXECUTION_MODES.SERVICE),
+    executionState: (input.execution?.mode ?? input.executionMode ?? input.observationMode) === EXECUTION_MODES.AUTHENTICATED_BROWSER
       ? EXECUTION_STATES.UNAVAILABLE
       : EXECUTION_STATES.AVAILABLE,
     authenticationState: normalizeAuthState(input.authenticationState ?? 'public'),
@@ -290,10 +358,10 @@ async function createMonitor(application, tenantId, principal, input) {
   }, monitorId);
 
   const initialObservation = input.initialObservation
-    ? {
+    ? normalizeObservationPayload(monitor, {
         ...input.initialObservation,
         authentication: normalizeAuthState(input.initialObservation.authentication)
-      }
+      })
     : null;
   const initialEvaluation = initialObservation?.authentication === 'authentication_required'
     ? { triggered: false, summary: 'Sign-in required' }
@@ -321,57 +389,59 @@ export async function runMonitorCheck(application, job) {
     return;
   }
 
-  if ((monitor.executionMode ?? monitor.observationMode) === EXECUTION_MODES.AUTHENTICATED_BROWSER) {
-    const executor = application.observationExecutors?.[EXECUTION_MODES.AUTHENTICATED_BROWSER]
-      ?? createAuthenticatedBrowserExecutor(application);
-    if (!await executor.isAvailable(monitor.tenantId)) {
-      await recordExecutionResult(application, monitor, { kind: 'unavailable', reason: 'browser_unavailable' }, {
-        attemptedAt: new Date().toISOString(),
-        executorId: executor.executorId
-      });
-      return;
-    }
-    await collection(application, MONITORS).update(monitor.id, {
-      executionState: EXECUTION_STATES.AVAILABLE,
-      lastExecutionAttemptAt: new Date().toISOString()
+  const executionMode = resolveExecutionMode(monitor);
+  const executor = createExecutorRegistry(application).resolve(executionMode);
+  if (!executor) {
+    await recordExecutionResult(application, monitor, {
+      kind: 'unavailable',
+      evidence: {
+        reason: 'executor_unavailable',
+        executionMode
+      }
     });
-    const result = await executor.observe({ ...monitor, executionMode: EXECUTION_MODES.AUTHENTICATED_BROWSER });
-    if (result.kind !== 'observation') {
-      await recordExecutionResult(application, monitor, result, { executorId: executor.executorId });
-      return;
-    }
-    if (result.observation?.pendingId) {
-      await collection(application, PENDING_OBSERVATIONS).update(result.observation.pendingId, { jobId: job.id });
-    }
     return;
   }
 
-  try {
-    const response = await fetch(monitor.url, {
-      headers: {
-        'user-agent': 'AppPort-Web-Monitor/1.0',
-        accept: 'text/html,application/xhtml+xml'
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch ${monitor.url}: ${response.status}`);
-    }
-
-    const html = await response.text();
-    const observation = observeHtml(monitor, html);
-    const evaluation = evaluateObservation(monitor, observation, monitor.lastObservation);
-    await recordObservation(application, monitor, observation, evaluation, {
-      observedAt: new Date().toISOString(),
-      source: 'job',
-      jobId: job.id
-    });
-  } catch (error) {
+  if (!await executor.isAvailable({ ...monitor, executionMode })) {
     await recordExecutionResult(application, monitor, {
-      kind: 'error',
-      reason: error instanceof Error ? error.message : String(error)
+      kind: 'unavailable',
+      evidence: {
+        executor: executionMode,
+        executionMode,
+        reason: executionMode === EXECUTION_MODES.AUTHENTICATED_BROWSER
+          ? 'browser_unavailable'
+          : 'service_unavailable'
+      }
+    }, {
+      attemptedAt: new Date().toISOString(),
+      executorId: executor.executorId
     });
+    return;
   }
+
+  await collection(application, MONITORS).update(monitor.id, {
+    executionState: EXECUTION_STATES.AVAILABLE,
+    lastExecutionAttemptAt: new Date().toISOString()
+  });
+
+  const result = await executor.observe({ ...monitor, executionMode });
+  if (result.kind !== 'observation') {
+    await recordExecutionResult(application, monitor, result, { executorId: executor.executorId });
+    return;
+  }
+
+  if (result.observation?.pendingId) {
+    await collection(application, PENDING_OBSERVATIONS).update(result.observation.pendingId, { jobId: job.id });
+    return;
+  }
+
+  const observation = normalizeObservationPayload(monitor, result.observation);
+  const evaluation = evaluateObservation(monitor, observation, monitor.lastObservation);
+  await recordObservation(application, monitor, observation, evaluation, {
+    observedAt: observation.observedAt || new Date().toISOString(),
+    source: executionMode === EXECUTION_MODES.SERVICE ? 'service' : 'job',
+    jobId: job.id
+  });
 }
 
 export function createMonitorRoutes(application) {
@@ -448,6 +518,7 @@ export function createMonitorRoutes(application) {
         await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
         throw Object.assign(new Error('Monitor not found or deleted'), { status: 404, code: 'NOT_FOUND' });
       }
+      const normalizedObservation = normalizeObservationPayload(monitor, sanitizedObservation);
 
       if (monitor.status === 'paused') {
         await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
@@ -456,8 +527,8 @@ export function createMonitorRoutes(application) {
 
       if (sanitizedObservation.authentication === 'authentication_required') {
         const evaluation = { triggered: false, summary: 'Sign-in required' };
-        await recordObservation(application, monitor, sanitizedObservation, evaluation, {
-          observedAt: sanitizedObservation.observedAt || new Date().toISOString(),
+        await recordObservation(application, monitor, normalizedObservation, evaluation, {
+          observedAt: normalizedObservation.observedAt || new Date().toISOString(),
           observationId: pendingId,
           source: 'extension-polling',
           jobId: pending.jobId
@@ -466,9 +537,9 @@ export function createMonitorRoutes(application) {
         return { ok: true };
       }
 
-      const evaluation = evaluateObservation(monitor, sanitizedObservation, monitor.lastObservation);
-      await recordObservation(application, monitor, sanitizedObservation, evaluation, {
-        observedAt: sanitizedObservation.observedAt || new Date().toISOString(),
+      const evaluation = evaluateObservation(monitor, normalizedObservation, monitor.lastObservation);
+      await recordObservation(application, monitor, normalizedObservation, evaluation, {
+        observedAt: normalizedObservation.observedAt || new Date().toISOString(),
         observationId: pendingId,
         source: 'extension-polling',
         jobId: pending.jobId

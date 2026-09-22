@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 
 import { createMonitorRoutes, runMonitorCheck } from '../src/server/monitors.js';
 
-function createMockApp() {
+function createMockApp(overrides = {}) {
   const store = {
     Monitors: new Map(),
     MonitorObservations: new Map(),
@@ -63,15 +63,42 @@ function createMockApp() {
         };
       }
     },
+    jobs: {
+      scheduleRecurring: async ({ tenantId, type, payload, interval, createdBy }) => ({
+        id: `schedule-${randomUUID()}`,
+        tenantId,
+        type,
+        payload,
+        interval,
+        createdBy
+      }),
+      disableSchedule: async () => ({ ok: true })
+    },
     notifications: {
       create: async (data) => {
         notifications.push(data);
         return { id: randomUUID() };
       }
-    }
+    },
+    ...overrides
   };
 
   return { app, store, notifications };
+}
+
+function createResponse({ status = 200, body = '', headers = { 'content-type': 'application/json' } } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get(name) {
+        return headers[String(name).toLowerCase()] ?? headers[name] ?? null;
+      }
+    },
+    async text() {
+      return typeof body === 'string' ? body : JSON.stringify(body);
+    }
+  };
 }
 
 test('Monitor check & submit observation lifecycle (ACTIVE -> observation -> condition false/true)', async () => {
@@ -509,4 +536,340 @@ test('Unavailable browser executor records operational evidence without changing
   });
   assert.equal(store.Monitors.get(monitorId).executionState, 'available');
   assert.equal(store.PendingObservations.size, 1);
+});
+
+test('Service executor persists canonical observations and preserves evaluation semantics', async () => {
+  const fetchCalls = [];
+  const { app, store, notifications } = createMockApp({
+    fetch: async (url, options) => {
+      fetchCalls.push({ url, options });
+      return createResponse({
+        status: 200,
+        body: { data: { price: 450 } }
+      });
+    },
+    resolveServiceAuthorizationContext: async ({ authorizationContext }) => ({
+      headers: {
+        authorization: `context-token:${authorizationContext}`
+      }
+    })
+  });
+
+  const monitorId = 'monitor-service-success';
+  await app.state.collection('Monitors').insert({
+    id: monitorId,
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://api.example.com/price',
+    pageTitle: 'Service price',
+    condition: { type: 'numeric_threshold', target: 'price', operator: 'lt', value: 500 },
+    target: {
+      path: 'data.price',
+      request: {
+        headers: {
+          authorization: 'config-token',
+          'x-client': 'web-monitor'
+        }
+      }
+    },
+    execution: {
+      mode: 'service',
+      authorizationContext: 'inventory-api'
+    },
+    executionMode: 'service',
+    executionState: 'available',
+    status: 'active',
+    scheduleId: 'schedule-1'
+  }, monitorId);
+
+  await runMonitorCheck(app, {
+    id: 'job-service-success',
+    payload: { monitorId }
+  });
+
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].options.headers.authorization, 'context-token:inventory-api');
+  assert.equal(fetchCalls[0].options.headers['x-client'], 'web-monitor');
+  assert.equal(fetchCalls[0].options.headers.cookie, undefined);
+
+  const observations = [...store.MonitorObservations.values()];
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].observation.executor, 'service');
+  assert.equal(observations[0].observation.executionMode, 'service');
+  assert.equal(observations[0].observation.subject, 'https://api.example.com/price');
+  assert.equal(observations[0].observation.values.numericValue, 450);
+  assert.equal(observations[0].observation.numericValue, 450);
+  assert.equal(observations[0].evaluation.triggered, true);
+  assert.equal(store.Monitors.get(monitorId).executionState, 'available');
+  assert.equal(store.Monitors.get(monitorId).status, 'triggered');
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].type, 'monitor_triggered');
+  assert.equal(JSON.stringify(notifications[0]).includes('context-token:inventory-api'), false);
+});
+
+test('Service authentication failures persist execution evidence without fabricating observations', async () => {
+  const { app, store, notifications } = createMockApp();
+  const monitorId = 'monitor-service-auth';
+  await app.state.collection('Monitors').insert({
+    id: monitorId,
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://api.example.com/private',
+    pageTitle: 'Private service',
+    condition: { type: 'text_appears', text: 'Ready' },
+    target: { path: 'message' },
+    execution: {
+      mode: 'service',
+      authorizationContext: 'missing-service-auth'
+    },
+    executionMode: 'service',
+    executionState: 'available',
+    status: 'active',
+    scheduleId: 'schedule-2'
+  }, monitorId);
+
+  await runMonitorCheck(app, {
+    id: 'job-service-auth',
+    payload: { monitorId }
+  });
+
+  assert.equal(store.MonitorObservations.size, 0);
+  assert.equal(store.MonitorExecutionEvidence.size, 1);
+  const [evidence] = [...store.MonitorExecutionEvidence.values()];
+  assert.equal(evidence.executionState, 'authentication_required');
+  assert.equal(evidence.reason, 'authentication_required');
+  assert.equal(evidence.evidence.reason, 'authentication_required');
+  assert.equal(store.Monitors.get(monitorId).status, 'active');
+  assert.equal(notifications.length, 0);
+});
+
+test('Service unavailability and recovery preserve scheduling and restore availability', async () => {
+  let attempts = 0;
+  const { app, store } = createMockApp({
+    fetch: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error('ECONNREFUSED token=secret');
+      }
+      return createResponse({
+        status: 200,
+        body: { status: 'Ready' }
+      });
+    }
+  });
+
+  const monitorId = 'monitor-service-recovery';
+  await app.state.collection('Monitors').insert({
+    id: monitorId,
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://api.example.com/status',
+    pageTitle: 'Service status',
+    condition: { type: 'text_appears', text: 'Ready' },
+    target: { path: 'status' },
+    execution: { mode: 'service' },
+    executionMode: 'service',
+    executionState: 'available',
+    status: 'active',
+    scheduleId: 'schedule-3'
+  }, monitorId);
+
+  await runMonitorCheck(app, {
+    id: 'job-service-down',
+    payload: { monitorId }
+  });
+
+  assert.equal(store.Monitors.get(monitorId).status, 'active');
+  assert.equal(store.Monitors.get(monitorId).executionState, 'unavailable');
+  assert.equal(store.Monitors.get(monitorId).scheduleId, 'schedule-3');
+  assert.equal(store.MonitorObservations.size, 0);
+  assert.equal(store.MonitorExecutionEvidence.size, 1);
+  assert.equal([...store.MonitorExecutionEvidence.values()][0].reason, 'service_unavailable');
+  assert.equal(JSON.stringify([...store.MonitorExecutionEvidence.values()][0]).includes('secret'), false);
+
+  await runMonitorCheck(app, {
+    id: 'job-service-recovered',
+    payload: { monitorId }
+  });
+
+  assert.equal(store.Monitors.get(monitorId).executionState, 'available');
+  assert.equal(store.MonitorObservations.size, 1);
+  assert.equal([...store.MonitorObservations.values()][0].evaluation.triggered, true);
+});
+
+test('Service executor errors are sanitized and unknown execution modes fail closed', async () => {
+  const { app, store } = createMockApp({
+    fetch: async () => createResponse({
+      status: 500,
+      body: { error: 'Authorization ******' }
+    })
+  });
+
+  await app.state.collection('Monitors').insert({
+    id: 'monitor-service-error',
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://api.example.com/error',
+    pageTitle: 'Service error',
+    condition: { type: 'text_appears', text: 'Ready' },
+    target: {
+      path: 'message',
+      request: {
+        headers: {
+          authorization: 'monitor-token',
+          cookie: 'session=123'
+        }
+      }
+    },
+    execution: { mode: 'service' },
+    executionMode: 'service',
+    executionState: 'available',
+    status: 'active'
+  }, 'monitor-service-error');
+
+  await runMonitorCheck(app, {
+    id: 'job-service-error',
+    payload: { monitorId: 'monitor-service-error' }
+  });
+
+  const evidenceItems = [...store.MonitorExecutionEvidence.values()];
+  assert.equal(evidenceItems.length, 1);
+  assert.deepEqual(evidenceItems[0].error, {
+    code: 'service_request_failed',
+    message: 'Service request failed'
+  });
+  assert.equal(JSON.stringify(evidenceItems[0]).includes('super-secret'), false);
+  assert.equal(JSON.stringify(evidenceItems[0]).includes('monitor-secret'), false);
+  assert.equal(store.MonitorObservations.size, 0);
+
+  await app.state.collection('Monitors').insert({
+    id: 'monitor-unknown-executor',
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://example.com/unknown',
+    pageTitle: 'Unknown executor',
+    condition: { type: 'text_appears', text: 'Ready' },
+    execution: { mode: 'remote_browser' },
+    executionMode: 'remote_browser',
+    executionState: 'available',
+    status: 'active'
+  }, 'monitor-unknown-executor');
+
+  await runMonitorCheck(app, {
+    id: 'job-unknown-executor',
+    payload: { monitorId: 'monitor-unknown-executor' }
+  });
+
+  const unknownEvidence = [...store.MonitorExecutionEvidence.values()].find((item) => item.monitorId === 'monitor-unknown-executor');
+  assert.equal(unknownEvidence.reason, 'executor_unavailable');
+  assert.equal(unknownEvidence.evidence.executionMode, 'remote_browser');
+  assert.equal(store.Monitors.get('monitor-unknown-executor').executionState, 'unavailable');
+});
+
+test('Equivalent browser and service observations produce equivalent evaluations', async () => {
+  const { app, store } = createMockApp({
+    fetch: async () => createResponse({
+      status: 200,
+      body: { message: 'Ready' }
+    })
+  });
+  const routes = createMonitorRoutes(app);
+
+  await app.state.collection('Monitors').insert({
+    id: 'browser-equivalence',
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://example.com/browser',
+    pageTitle: 'Browser equivalence',
+    condition: { type: 'text_appears', text: 'Ready' },
+    execution: { mode: 'authenticated_browser' },
+    executionMode: 'authenticated_browser',
+    executionState: 'available',
+    status: 'active'
+  }, 'browser-equivalence');
+  await app.state.collection('PendingObservations').insert({
+    id: 'pending-browser-equivalence',
+    monitorId: 'browser-equivalence',
+    tenantId: 'test-tenant',
+    ownerId: 'user-123'
+  }, 'pending-browser-equivalence');
+
+  await routes['POST /api/observations/submit']({
+    tenantId: 'test-tenant',
+    principal: { principalId: 'user-123', scopes: ['monitors.write'] },
+    body: {
+      pendingId: 'pending-browser-equivalence',
+      observation: {
+        authentication: 'authenticated',
+        observedAt: new Date().toISOString(),
+        url: 'https://example.com/browser',
+        execution: 'authenticated_browser',
+        valueText: 'Ready',
+        present: true
+      }
+    }
+  });
+
+  await app.state.collection('Monitors').insert({
+    id: 'service-equivalence',
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://api.example.com/ready',
+    pageTitle: 'Service equivalence',
+    condition: { type: 'text_appears', text: 'Ready' },
+    target: { path: 'message' },
+    execution: { mode: 'service' },
+    executionMode: 'service',
+    executionState: 'available',
+    status: 'active'
+  }, 'service-equivalence');
+
+  await runMonitorCheck(app, {
+    id: 'job-service-equivalence',
+    payload: { monitorId: 'service-equivalence' }
+  });
+
+  const browserObservation = [...store.MonitorObservations.values()].find((item) => item.monitorId === 'browser-equivalence');
+  const serviceObservation = [...store.MonitorObservations.values()].find((item) => item.monitorId === 'service-equivalence');
+  assert.deepEqual(browserObservation.evaluation, serviceObservation.evaluation);
+  assert.equal(browserObservation.evaluation.triggered, true);
+});
+
+test('Service monitor creation stores only authorization context, not credentials', async () => {
+  const { app, store } = createMockApp();
+  const routes = createMonitorRoutes(app);
+
+  const created = await routes['POST /api/monitors']({
+    tenantId: 'test-tenant',
+    principal: { principalId: 'user-123', tenantId: 'test-tenant', scopes: ['monitors.write'] },
+    body: {
+      url: 'https://api.example.com/resource',
+      title: 'Service monitor',
+      conditionInput: 'page contains "Ready"',
+      schedule: '15m',
+      target: {
+        path: 'message',
+        request: {
+          headers: {
+            authorization: '******'
+          }
+        }
+      },
+      execution: {
+        mode: 'service',
+        authorizationContext: 'inventory-auth',
+        username: 'alice',
+        password: 'super-secret'
+      }
+    }
+  });
+
+  const savedMonitor = store.Monitors.get(created.id);
+  assert.deepEqual(savedMonitor.execution, {
+    mode: 'service',
+    authorizationContext: 'inventory-auth'
+  });
+  assert.equal(JSON.stringify(savedMonitor).includes('super-secret'), false);
+  assert.equal(JSON.stringify(savedMonitor).includes('alice'), false);
+  assert.equal(savedMonitor.execution.authorizationContext, 'inventory-auth');
 });
