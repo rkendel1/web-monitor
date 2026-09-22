@@ -22,13 +22,23 @@ function setStatus(message, isError = false) {
 function renderMonitors(items) {
   monitorCountElement.textContent = `${items.length} active monitor${items.length === 1 ? '' : 's'}`;
   monitorListElement.innerHTML = items.length
-    ? items.map((monitor) => `
-        <li>
-          <strong>${monitor.pageTitle}</strong>
-          <div>${conditionLabel(monitor.condition)}</div>
-          <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${monitor.status}</div>
-        </li>
-      `).join('')
+    ? items.map((monitor) => {
+        const isAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
+        const statusText = isAuthRequired ? 'Sign-in required' : monitor.status;
+        const warningBox = isAuthRequired
+          ? `<div class="auth-required-box" style="margin-top: 6px; padding: 6px 8px; background-color: #fef0c7; border: 1px solid #fec84b; border-radius: 4px; font-size: 11px; color: #b54708;">
+               <strong>Sign-in required</strong><br>Open the page, sign in, and this monitor will continue automatically.
+             </div>`
+          : '';
+        return `
+          <li>
+            <strong>${monitor.pageTitle}</strong>
+            <div>${conditionLabel(monitor.condition)}</div>
+            <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText}</div>
+            ${warningBox}
+          </li>
+        `;
+      }).join('')
     : '<li class="muted">No monitors yet.</li>';
 }
 
@@ -36,6 +46,14 @@ async function loadPage() {
   try {
     const page = await sendMessage({ type: 'APPPORT_GET_CURRENT_PAGE' });
     pageUrlElement.textContent = page?.url || 'No active page';
+
+    const authDetection = await sendMessage({ type: 'APPPORT_DETECT_AUTH' }).catch(() => null);
+    const authWarning = document.querySelector('#auth-warning');
+    if (authDetection?.data?.state === 'authenticated' || authDetection?.data?.state === 'required') {
+      authWarning.style.display = 'block';
+    } else {
+      authWarning.style.display = 'none';
+    }
   } catch (error) {
     pageUrlElement.textContent = error.message;
   }

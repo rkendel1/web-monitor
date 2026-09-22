@@ -84,6 +84,15 @@ export const appPortClient = {
       body: JSON.stringify({ id })
     });
   },
+  getPendingObservations() {
+    return request('/api/observations/pending');
+  },
+  submitObservation(body) {
+    return request('/api/observations/submit', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+  },
   listUnreadNotifications() {
     return request('/_appport/notifications?unread=true&limit=25');
   },
