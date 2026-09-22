@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AppPort Monitor</title>
+    <link rel="stylesheet" href="./popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <h1>AppPort Monitor</h1>
+      <section class="card">
+        <h2>Connection</h2>
+        <form id="config-form" class="stack">
+          <label>
+            Service URL
+            <input name="baseUrl" type="url" placeholder="http://127.0.0.1:8787" required>
+          </label>
+          <label>
+            Tenant ID
+            <input name="tenantId" type="text" placeholder="development" required>
+          </label>
+          <label>
+            API key
+            <input name="apiKey" type="password" placeholder="appport_..." required>
+          </label>
+          <button type="submit">Save connection</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>This page</h2>
+        <p id="page-url" class="muted">Loading current tab…</p>
+        <form id="monitor-form" class="stack">
+          <label>
+            What should I watch for?
+            <input name="condition" type="text" placeholder="price drops below $500" required>
+          </label>
+          <label>
+            Check every
+            <select name="schedule">
+              <option value="15m">15 minutes</option>
+              <option value="30m">30 minutes</option>
+              <option value="1h" selected>1 hour</option>
+              <option value="6h">6 hours</option>
+              <option value="12h">12 hours</option>
+              <option value="1d">1 day</option>
+            </select>
+          </label>
+          <button type="submit">Monitor this page</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="row between">
+          <h2>Active monitors</h2>
+          <button id="view-monitors" type="button">View monitors</button>
+        </div>
+        <p id="monitor-count" class="muted">Loading monitors…</p>
+        <ul id="monitor-list" class="list"></ul>
+      </section>
+
+      <p id="status" class="status" role="status"></p>
+      <p class="footnote">MVP note: server-rendered pages work best today; some JavaScript-heavy pages may need richer extraction later.</p>
+    </main>
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

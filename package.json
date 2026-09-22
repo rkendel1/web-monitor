@@ -1,0 +1,16 @@
+{
+  "name": "web-monitor",
+  "version": "1.0.0",
+  "description": "AppPort-powered MVP for monitoring webpages from a Chrome extension.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "create:api-key": "node scripts/create-api-key.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@appport/services": "0.4.3",
+    "cheerio": "1.2.0"
+  }
+}

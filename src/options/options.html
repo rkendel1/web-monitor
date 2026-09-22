@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AppPort Web Monitor</title>
+    <link rel="stylesheet" href="../popup/popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <h1>AppPort Web Monitor</h1>
+      <section class="card">
+        <div class="row between">
+          <h2>Monitors</h2>
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+        <div id="monitor-list" class="list"></div>
+      </section>
+      <section class="card">
+        <h2>Monitor detail</h2>
+        <div id="monitor-detail" class="muted">Select a monitor to view its latest observation history.</div>
+      </section>
+      <p id="status" class="status" role="status"></p>
+    </main>
+    <script type="module" src="./options.js"></script>
+  </body>
+</html>
