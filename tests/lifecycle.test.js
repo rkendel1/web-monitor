@@ -220,6 +220,9 @@ test('Session expiration lifecycle (ACTIVE -> AUTHENTICATION_REQUIRED -> notific
   assert.equal(monitorExpired.status, 'AUTHENTICATION_REQUIRED');
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, 'monitor.auth_expired');
+  const expiredObservations = await app.state.collection('MonitorObservations').find({ monitorId });
+  assert.equal(expiredObservations[0].observation.authentication, 'authentication_required');
+  assert.equal(expiredObservations[0].evaluation.triggered, false);
 
   // 2. User re-authenticates and next check succeeds
   const pendingId2 = 'pending-auth-2';

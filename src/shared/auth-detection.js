@@ -3,7 +3,7 @@
  *
  * @param {string} html - The page HTML content.
  * @param {string} url - The page URL.
- * @returns {'public'|'authenticated'|'required'|'unknown'} The detected state.
+ * @returns {'public'|'authenticated'|'authentication_required'|'unknown'} The detected state.
  */
 export function detectAuthState(html, url) {
   if (!html) {
@@ -34,7 +34,7 @@ export function detectAuthState(html, url) {
                     urlLower.includes('log-in');
 
   if (hasPasswordInput || hasLoginForm || isLoginUrl) {
-    return 'required';
+    return 'authentication_required';
   }
 
   // 2. authenticated page currently accessible detection:
@@ -54,4 +54,8 @@ export function detectAuthState(html, url) {
 
   // 3. If none of the above matches, it's public.
   return 'public';
+}
+
+export function normalizeAuthState(state) {
+  return state === 'required' ? 'authentication_required' : state;
 }

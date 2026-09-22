@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectAuthState } from '../src/shared/auth-detection.js';
+import { detectAuthState, normalizeAuthState } from '../src/shared/auth-detection.js';
 
 test('detectAuthState correctly identifies different auth states', () => {
   // 1. Authenticated page
@@ -27,7 +27,7 @@ test('detectAuthState correctly identifies different auth states', () => {
       </body>
     </html>
   `;
-  assert.equal(detectAuthState(loginHtml, 'https://example.com/login-form'), 'required');
+  assert.equal(detectAuthState(loginHtml, 'https://example.com/login-form'), 'authentication_required');
 
   // 3. Redirected login page (by URL)
   const redirectHtml = `
@@ -37,7 +37,7 @@ test('detectAuthState correctly identifies different auth states', () => {
       </body>
     </html>
   `;
-  assert.equal(detectAuthState(redirectHtml, 'https://example.com/auth/login?redirect=%2Fdashboard'), 'required');
+  assert.equal(detectAuthState(redirectHtml, 'https://example.com/auth/login?redirect=%2Fdashboard'), 'authentication_required');
 
   // 4. Public page
   const publicHtml = `
@@ -52,4 +52,9 @@ test('detectAuthState correctly identifies different auth states', () => {
 
   // 5. Unknown state
   assert.equal(detectAuthState(null, 'https://example.com/blog'), 'unknown');
+});
+
+test('normalizes the legacy authentication state at the compatibility boundary', () => {
+  assert.equal(normalizeAuthState('required'), 'authentication_required');
+  assert.equal(normalizeAuthState('authenticated'), 'authenticated');
 });

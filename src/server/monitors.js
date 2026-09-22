@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { conditionLabel, normalizeInterval, parseConditionInput } from '../shared/conditions.js';
+import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateObservation, observeHtml } from './observation.js';
 
 const MONITORS = 'Monitors';
@@ -22,7 +23,7 @@ function monitorStatus(monitor, nextTriggered, observation) {
   if (monitor.status === 'paused') {
     return 'paused';
   }
-  if (observation?.authentication === 'required' || observation?.authentication === 'authentication_required') {
+  if (normalizeAuthState(observation?.authentication) === 'authentication_required') {
     return 'AUTHENTICATION_REQUIRED';
   }
   return nextTriggered ? 'triggered' : 'active';
@@ -178,7 +179,7 @@ async function createMonitor(application, tenantId, principal, input) {
     createdAt,
     updatedAt: createdAt,
     observationMode: input.observationMode ?? 'public',
-    authenticationState: input.authenticationState ?? 'public',
+    authenticationState: normalizeAuthState(input.authenticationState ?? 'public'),
     ...(input.initialObservation ? { lastObservation: input.initialObservation } : {}),
     ...(input.initialEvaluation ? { lastEvaluation: input.initialEvaluation } : {})
   };
@@ -196,8 +197,18 @@ async function createMonitor(application, tenantId, principal, input) {
     scheduleId: schedule.id
   }, monitorId);
 
-  if (input.initialObservation && input.initialEvaluation) {
-    await recordObservation(application, { ...monitor, scheduleId: schedule.id }, input.initialObservation, input.initialEvaluation, {
+  const initialObservation = input.initialObservation
+    ? {
+        ...input.initialObservation,
+        authentication: normalizeAuthState(input.initialObservation.authentication)
+      }
+    : null;
+  const initialEvaluation = initialObservation?.authentication === 'authentication_required'
+    ? { triggered: false, summary: 'Sign-in required' }
+    : input.initialEvaluation;
+
+  if (initialObservation && initialEvaluation) {
+    await recordObservation(application, { ...monitor, scheduleId: schedule.id }, initialObservation, initialEvaluation, {
       observedAt: createdAt,
       source: 'extension-capture',
       skipNotification: true
@@ -292,7 +303,10 @@ export function createMonitorRoutes(application) {
         valueText, numericValue, present, selector, error
       } = observation;
       const sanitizedObservation = {
-        url, observedAt, execution, authentication,
+        url,
+        observedAt,
+        execution,
+        authentication: normalizeAuthState(authentication),
         ...(valueText !== undefined ? { valueText } : {}),
         ...(numericValue !== undefined ? { numericValue } : {}),
         ...(present !== undefined ? { present } : {}),
@@ -316,7 +330,7 @@ export function createMonitorRoutes(application) {
         return { ok: true };
       }
 
-      if (sanitizedObservation.authentication === 'required' || sanitizedObservation.authentication === 'authentication_required') {
+      if (sanitizedObservation.authentication === 'authentication_required') {
         const evaluation = { triggered: false, summary: 'Sign-in required' };
         await recordObservation(application, monitor, sanitizedObservation, evaluation, {
           observedAt: sanitizedObservation.observedAt || new Date().toISOString(),

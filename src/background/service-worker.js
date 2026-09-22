@@ -1,5 +1,6 @@
 import { appPortClient } from '../appport/client.js';
 import { ExtensionAuth } from '../appport/auth.js';
+import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateCondition, parseConditionInput } from '../shared/conditions.js';
 
 const NOTIFICATION_ALARM = 'appport-notifications-sync';
@@ -246,10 +247,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case 'APPPORT_CREATE_MONITOR': {
           const condition = parseConditionInput(message.conditionInput);
           const draft = await captureMonitorDraft(condition);
-          const initialEvaluation = evaluateCondition(condition, draft.initialObservation, null);
           
-          const authState = draft.authentication ?? 'public';
-          const observationMode = (authState === 'authenticated' || authState === 'required' || authState === 'authentication_required')
+          const authState = normalizeAuthState(draft.authentication ?? 'public');
+          const initialObservation = {
+            ...draft.initialObservation,
+            authentication: authState,
+            observedAt: new Date().toISOString(),
+            url: draft.url,
+            execution: authState === 'authenticated' || authState === 'authentication_required'
+              ? 'authenticated_browser'
+              : 'public'
+          };
+          const initialEvaluation = authState === 'authentication_required'
+            ? { triggered: false, summary: 'Sign-in required' }
+            : evaluateCondition(condition, initialObservation, null);
+          const observationMode = (authState === 'authenticated' || authState === 'authentication_required')
             ? 'authenticated_browser'
             : 'public';
 
@@ -260,7 +272,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             condition,
             schedule: message.schedule,
             target: draft.target,
-            initialObservation: draft.initialObservation,
+            initialObservation,
             initialEvaluation,
             notes: draft.notes || '',
             observationMode,
