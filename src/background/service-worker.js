@@ -283,6 +283,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             initialObservation,
             notes: draft.notes || '',
             observationMode,
+            executionMode: observationMode === 'authenticated_browser' ? 'authenticated_browser' : undefined,
             authenticationState: authState
           });
           sendResponse({ ok: true, data: created });

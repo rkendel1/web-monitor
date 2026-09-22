@@ -87,7 +87,7 @@ async function recordExecutionResult(application, monitor, result, options = {})
     monitorId: monitor.id,
     tenantId: monitor.tenantId,
     ownerId: monitor.ownerId,
-    executionMode: monitor.executionMode,
+    executionMode: monitor.executionMode ?? monitor.observationMode,
     executionState,
     attemptedAt,
     reason: result.reason,
@@ -258,8 +258,10 @@ async function createMonitor(application, tenantId, principal, input) {
     updatedAt: createdAt,
     observationMode: input.observationMode ?? 'public',
     executionMode: input.executionMode
-      ?? (input.observationMode === 'authenticated_browser' ? EXECUTION_MODES.AUTHENTICATED_BROWSER : null),
-    executionState: input.executionMode || input.observationMode === 'authenticated_browser'
+      ?? (input.observationMode === 'authenticated_browser'
+        ? EXECUTION_MODES.AUTHENTICATED_BROWSER
+        : EXECUTION_MODES.SERVER),
+    executionState: (input.executionMode ?? input.observationMode) === EXECUTION_MODES.AUTHENTICATED_BROWSER
       ? EXECUTION_STATES.UNAVAILABLE
       : EXECUTION_STATES.AVAILABLE,
     authenticationState: normalizeAuthState(input.authenticationState ?? 'public'),
@@ -329,6 +331,10 @@ export async function runMonitorCheck(application, job) {
       });
       return;
     }
+    await collection(application, MONITORS).update(monitor.id, {
+      executionState: EXECUTION_STATES.AVAILABLE,
+      lastExecutionAttemptAt: new Date().toISOString()
+    });
     const result = await executor.observe({ ...monitor, executionMode: EXECUTION_MODES.AUTHENTICATED_BROWSER });
     if (result.kind !== 'observation') {
       await recordExecutionResult(application, monitor, result, { executorId: executor.executorId });
@@ -340,25 +346,32 @@ export async function runMonitorCheck(application, job) {
     return;
   }
 
-  const response = await fetch(monitor.url, {
-    headers: {
-      'user-agent': 'AppPort-Web-Monitor/1.0',
-      accept: 'text/html,application/xhtml+xml'
+  try {
+    const response = await fetch(monitor.url, {
+      headers: {
+        'user-agent': 'AppPort-Web-Monitor/1.0',
+        accept: 'text/html,application/xhtml+xml'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${monitor.url}: ${response.status}`);
     }
-  });
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${monitor.url}: ${response.status}`);
+    const html = await response.text();
+    const observation = observeHtml(monitor, html);
+    const evaluation = evaluateObservation(monitor, observation, monitor.lastObservation);
+    await recordObservation(application, monitor, observation, evaluation, {
+      observedAt: new Date().toISOString(),
+      source: 'job',
+      jobId: job.id
+    });
+  } catch (error) {
+    await recordExecutionResult(application, monitor, {
+      kind: 'error',
+      reason: error instanceof Error ? error.message : String(error)
+    });
   }
-
-  const html = await response.text();
-  const observation = observeHtml(monitor, html);
-  const evaluation = evaluateObservation(monitor, observation, monitor.lastObservation);
-  await recordObservation(application, monitor, observation, evaluation, {
-    observedAt: new Date().toISOString(),
-    source: 'job',
-    jobId: job.id
-  });
 }
 
 export function createMonitorRoutes(application) {
@@ -400,6 +413,10 @@ export function createMonitorRoutes(application) {
           throw Object.assign(new Error('Pending observation not found'), { status: 404, code: 'NOT_FOUND' });
         }
         const monitor = await collection(application, MONITORS).get(pending.monitorId);
+        if (!monitor || monitor.deletedAt) {
+          await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
+          throw Object.assign(new Error('Monitor not found or deleted'), { status: 404, code: 'NOT_FOUND' });
+        }
         await recordExecutionResult(application, monitor, result, { executorId: 'authenticated-browser' });
         await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
         return { ok: true };

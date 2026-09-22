@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 export const EXECUTION_MODES = Object.freeze({
-  AUTHENTICATED_BROWSER: 'authenticated_browser'
+  AUTHENTICATED_BROWSER: 'authenticated_browser',
+  SERVER: 'server'
 });
 
 export const EXECUTION_STATES = Object.freeze({
