@@ -1,7 +1,7 @@
 import { appPortClient } from '../appport/client.js';
 import { ExtensionAuth } from '../appport/auth.js';
 import { normalizeAuthState } from '../shared/auth-detection.js';
-import { evaluateCondition, parseConditionInput } from '../shared/conditions.js';
+import { parseConditionInput } from '../shared/conditions.js';
 
 const NOTIFICATION_ALARM = 'appport-notifications-sync';
 const NOTIFICATION_CACHE_KEY = 'shownNotifications';
@@ -141,13 +141,12 @@ async function deliverBrowserNotifications() {
   let changed = false;
 
   for (const notification of page.items ?? []) {
+    if (!notification.data?.deliveryPolicy?.channels?.includes('browser')) {
+      continue;
+    }
     if (shownNotifications[notification.id]) {
       continue;
     }
-
-    shownNotifications[notification.id] = new Date().toISOString();
-    notificationLinks[notification.id] = notification.data?.url || notification.source?.url || null;
-    changed = true;
 
     await chrome.notifications.create(notification.id, {
       type: 'basic',
@@ -156,6 +155,9 @@ async function deliverBrowserNotifications() {
       message: notification.body || 'A monitor changed.',
       contextMessage: notification.data?.condition ? String(notification.data.condition) : 'AppPort Web Monitor'
     });
+    shownNotifications[notification.id] = new Date().toISOString();
+    notificationLinks[notification.id] = notification.data?.url || notification.source?.url || null;
+    changed = true;
   }
 
   if (changed) {
@@ -260,9 +262,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               ? 'authenticated_browser'
               : 'public'
           };
-          const initialEvaluation = authState === 'authentication_required'
-            ? { triggered: false, summary: 'Sign-in required' }
-            : evaluateCondition(condition, initialObservation, null);
           const observationMode = (authState === 'authenticated' || authState === 'authentication_required')
             ? 'authenticated_browser'
             : 'public';
@@ -275,7 +274,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             schedule: message.schedule,
             target: draft.target,
             initialObservation,
-            initialEvaluation,
             notes: draft.notes || '',
             observationMode,
             authenticationState: authState

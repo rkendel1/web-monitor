@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { conditionLabel, normalizeInterval, parseConditionInput } from '../shared/conditions.js';
 import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateObservation, observeHtml } from './observation.js';
@@ -7,6 +7,7 @@ import { createNotificationEvent } from './notifications.js';
 const MONITORS = 'Monitors';
 const OBSERVATIONS = 'MonitorObservations';
 const PENDING_OBSERVATIONS = 'PendingObservations';
+const TRIGGER_EVENTS = 'MonitorTriggeredEvents';
 
 function collection(application, name) {
   return application.state.collection(name);
@@ -80,7 +81,7 @@ function systemPrincipal(tenantId) {
 
 async function recordObservation(application, monitor, observation, evaluation, options = {}) {
   const observedAt = options.observedAt ?? new Date().toISOString();
-  const observationId = randomUUID();
+  const observationId = options.observationId ?? randomUUID();
   await collection(application, OBSERVATIONS).insert({
     id: observationId,
     monitorId: monitor.id,
@@ -124,12 +125,14 @@ async function recordObservation(application, monitor, observation, evaluation, 
       title: 'Sign-in required',
       body: `${monitor.pageTitle}: Open the page, sign in, and this monitor will continue automatically.`,
       priority: 'high',
+      channel: (monitor.notificationPolicy ?? { channels: ['browser'] }).channels.includes('browser') ? 'browser' : undefined,
       source: { type: 'monitor', id: monitor.id },
       data: {
         monitorId: monitor.id,
         url: monitor.url,
         condition: conditionLabel(monitor.condition),
-        status: 'AUTHENTICATION_REQUIRED'
+        status: 'AUTHENTICATION_REQUIRED',
+        deliveryPolicy: monitor.notificationPolicy ?? { channels: ['browser'] }
       },
     }, systemPrincipal(monitor.tenantId));
   }
@@ -137,21 +140,61 @@ async function recordObservation(application, monitor, observation, evaluation, 
   const previouslyTriggered = Boolean(monitor.lastEvaluation?.triggered);
   if (!options.skipNotification && !previouslyTriggered && evaluation.triggered && nextStatus !== 'AUTHENTICATION_REQUIRED') {
     const summaryValue = observation.numericValue != null ? `$${observation.numericValue}` : observation.valueText || conditionLabel(monitor.condition);
-    await createNotificationEvent(application, {
+    const deliveryPolicy = monitor.notificationPolicy ?? { channels: ['browser'] };
+    const triggerId = createHash('sha256')
+      .update(`${monitor.id}:${observationId}:${JSON.stringify(evaluation)}`)
+      .digest('hex')
+      .replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, '$1-$2-$3-$4-$5');
+    const triggerCollection = collection(application, TRIGGER_EVENTS);
+    if (await triggerCollection.get(triggerId)) {
+      return;
+    }
+    const notification = await createNotificationEvent(application, {
       tenantId: monitor.tenantId,
       recipient: monitor.ownerId,
-      type: 'monitor.triggered',
+      type: 'monitor_triggered',
       title: 'Monitor triggered',
       body: `${monitor.pageTitle}: ${summaryValue}`,
       priority: 'high',
+      channel: deliveryPolicy.channels.includes('browser') ? 'browser' : undefined,
       source: { type: 'monitor', id: monitor.id },
       data: {
         monitorId: monitor.id,
+        observationId,
         url: monitor.url,
         value: summaryValue,
-        condition: conditionLabel(monitor.condition)
+        condition: monitor.condition,
+        observedAt,
+        observedValues: {
+          valueText: observation.valueText,
+          numericValue: observation.numericValue,
+          present: observation.present,
+          selector: observation.selector
+        },
+        evidence: {
+          observationId,
+          evaluation
+        },
+        deliveryPolicy
       },
     }, systemPrincipal(monitor.tenantId));
+    await triggerCollection.insert({
+      id: triggerId,
+      type: 'monitor_triggered',
+      monitorId: monitor.id,
+      observationId,
+      observedAt,
+      condition: monitor.condition,
+      observedValues: {
+        valueText: observation.valueText,
+        numericValue: observation.numericValue,
+        present: observation.present,
+        selector: observation.selector
+      },
+      evidence: { evaluation },
+      deliveryPolicy,
+      notificationId: notification.id
+    }, triggerId);
   }
 }
 
@@ -179,6 +222,13 @@ async function createMonitor(application, tenantId, principal, input) {
     updatedAt: createdAt,
     observationMode: input.observationMode ?? 'public',
     authenticationState: normalizeAuthState(input.authenticationState ?? 'public'),
+    notificationPolicy: {
+      channels: [...new Set(
+        Array.isArray(input.notificationPolicy?.channels)
+          ? input.notificationPolicy.channels.filter((channel) => typeof channel === 'string' && channel.trim())
+          : ['browser']
+      )]
+    },
     ...(input.initialObservation ? { lastObservation: input.initialObservation } : {}),
     ...(input.initialEvaluation ? { lastEvaluation: input.initialEvaluation } : {})
   };
@@ -204,7 +254,9 @@ async function createMonitor(application, tenantId, principal, input) {
     : null;
   const initialEvaluation = initialObservation?.authentication === 'authentication_required'
     ? { triggered: false, summary: 'Sign-in required' }
-    : input.initialEvaluation;
+    : initialObservation
+      ? evaluateObservation(monitor, initialObservation, null)
+      : input.initialEvaluation;
 
   if (initialObservation && initialEvaluation) {
     await recordObservation(application, { ...monitor, scheduleId: schedule.id }, initialObservation, initialEvaluation, {
@@ -333,6 +385,7 @@ export function createMonitorRoutes(application) {
         const evaluation = { triggered: false, summary: 'Sign-in required' };
         await recordObservation(application, monitor, sanitizedObservation, evaluation, {
           observedAt: sanitizedObservation.observedAt || new Date().toISOString(),
+          observationId: pendingId,
           source: 'extension-polling',
           jobId: pending.jobId
         });
@@ -343,6 +396,7 @@ export function createMonitorRoutes(application) {
       const evaluation = evaluateObservation(monitor, sanitizedObservation, monitor.lastObservation);
       await recordObservation(application, monitor, sanitizedObservation, evaluation, {
         observedAt: sanitizedObservation.observedAt || new Date().toISOString(),
+        observationId: pendingId,
         source: 'extension-polling',
         jobId: pending.jobId
       });

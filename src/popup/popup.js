@@ -34,7 +34,7 @@ function renderMonitors(items) {
           <li>
             <strong>${monitor.pageTitle}</strong>
             <div>${conditionLabel(monitor.condition)}</div>
-            <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText}</div>
+            <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText} · Notifications: ${(monitor.notificationPolicy?.channels ?? ['browser']).join(', ')}</div>
             ${warningBox}
           </li>
         `;

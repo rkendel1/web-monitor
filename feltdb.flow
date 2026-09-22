@@ -148,6 +148,7 @@ app web-monitor {
     lastEvaluation: json
     triggeredAt: datetime
     deletedAt: datetime
+    notificationPolicy: json
     index tenant_idx using hash (tenantId)
     index owner_idx using hash (ownerId)
     index status_idx using hash (status)
@@ -169,5 +170,20 @@ app web-monitor {
     index monitor_idx using hash (monitorId)
     index owner_idx using hash (ownerId)
     index observed_idx using sorted (observedAt)
+  }
+
+  collection MonitorTriggeredEvents {
+    id: uuid
+    type: text
+    monitorId: uuid
+    observationId: uuid
+    observedAt: datetime
+    condition: json
+    observedValues: json
+    evidence: json
+    deliveryPolicy: json
+    notificationId: uuid
+    index monitor_idx using hash (monitorId)
+    index observation_idx using hash (observationId)
   }
 }

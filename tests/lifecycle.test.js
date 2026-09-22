@@ -19,7 +19,8 @@ function createMockApp() {
   const store = {
     Monitors: new Map(),
     MonitorObservations: new Map(),
-    PendingObservations: new Map()
+    PendingObservations: new Map(),
+    MonitorTriggeredEvents: new Map()
   };
 
   const notifications = [];
@@ -164,9 +165,9 @@ test('Monitor check & submit observation lifecycle (ACTIVE -> observation -> con
   const monitorAfterSecond = await app.state.collection('Monitors').get(monitorId);
   assert.equal(monitorAfterSecond.status, 'triggered');
   assert.equal(notifications.length, 1);
-  assert.equal(notifications[0].type, 'monitor.triggered');
+  assert.equal(notifications[0].type, 'monitor_triggered');
   assert.equal(notifications[0].recipient, ownerId);
-  assert.equal(notifications[0].channel, undefined);
+  assert.deepEqual(notifications[0].data.deliveryPolicy, { channels: ['browser'] });
 });
 
 test('Session expiration lifecycle (ACTIVE -> AUTHENTICATION_REQUIRED -> notification -> user re-authenticates -> ACTIVE)', async () => {
@@ -221,7 +222,7 @@ test('Session expiration lifecycle (ACTIVE -> AUTHENTICATION_REQUIRED -> notific
   assert.equal(monitorExpired.status, 'AUTHENTICATION_REQUIRED');
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, 'monitor.auth_expired');
-  assert.equal(notifications[0].channel, undefined);
+  assert.equal(notifications[0].channel, 'browser');
   const expiredObservations = await app.state.collection('MonitorObservations').find({ monitorId });
   assert.equal(expiredObservations[0].observation.authentication, 'authentication_required');
   assert.equal(expiredObservations[0].evaluation.triggered, false);
@@ -407,4 +408,57 @@ test('Safety boundary (no credentials, cookies, headers, or secrets)', async () 
   assert.equal(savedObservation.password, undefined);
   assert.equal(savedObservation.authorization, undefined);
   assert.equal(savedObservation.apiKey, undefined);
+});
+
+test('Triggered notification preserves durable evidence and never includes observation credentials', async () => {
+  const { app, store, notifications } = createMockApp();
+  const routes = createMonitorRoutes(app);
+  const monitorId = 'monitor-evidence';
+  const tenantId = 'test-tenant';
+  const ownerId = 'user-123';
+  await app.state.collection('Monitors').insert({
+    id: monitorId,
+    tenantId,
+    ownerId,
+    url: 'https://example.com/safe',
+    pageTitle: 'Safe Page',
+    condition: { type: 'text_appears', text: 'Safe' },
+    status: 'active',
+    scheduleInterval: '1h',
+    notificationPolicy: { channels: ['browser'] }
+  }, monitorId);
+  await app.state.collection('PendingObservations').insert({
+    id: 'pending-evidence',
+    monitorId,
+    tenantId,
+    ownerId,
+    url: 'https://example.com/safe',
+    condition: { type: 'text_appears', text: 'Safe' }
+  }, 'pending-evidence');
+
+  await routes['POST /api/observations/submit']({
+    tenantId,
+    principal: { principalId: ownerId, scopes: ['monitors.write'] },
+    body: {
+      pendingId: 'pending-evidence',
+      observation: {
+        authentication: 'authenticated',
+        observedAt: new Date().toISOString(),
+        url: 'https://example.com/safe',
+        execution: 'authenticated_browser',
+        valueText: 'Safe',
+        present: true,
+        password: 'do-not-store',
+        cookies: 'session=secret',
+        authorization: '******'
+      }
+    }
+  });
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].type, 'monitor_triggered');
+  assert.equal(notifications[0].data.observationId, 'pending-evidence');
+  assert.deepEqual(notifications[0].data.deliveryPolicy, { channels: ['browser'] });
+  assert.equal(JSON.stringify(notifications[0]).includes('do-not-store'), false);
+  assert.equal(store.MonitorTriggeredEvents.size, 1);
 });

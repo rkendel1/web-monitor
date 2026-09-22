@@ -90,10 +90,30 @@ The command writes the extension credential to `.appport/extension-api-key.json`
 8. The browser adapter in the extension converts that AppPort event into a Chrome notification
 9. Clicking the browser notification opens the monitored URL
 
-Notifications are durable AppPort events. Their creation is independent of delivery,
-so future adapters (such as email, webhook, or mobile delivery) can consume the same
-event without changing monitor evaluation or persistence. The extension's browser
-notification adapter is only one consumer of unread events.
+Notifications are durable AppPort events. Monitor conditions are evaluated by the
+authoritative monitor service, which records a `monitor_triggered` event containing
+the observation and evidence before AppPort creates channel delivery state. Browser
+notifications are only one delivery adapter; the browser is an observation executor
+and notification surface, not the durable monitoring authority. Closing the browser
+does not destroy monitor state or already-created notifications.
+
+```text
+             Durable Monitor
+                   │
+          ┌────────┴────────┐
+          │                 │
+     Observation         Notification
+       executor             event
+          │                 │
+      Browser          AppPort Services
+          │                 │
+          ▼           ┌─────┼─────┐
+     Observation      ▼     ▼     ▼
+          │        Browser Email  Attn
+          ▼
+        FeltDB
+     evidence/state
+```
 
 ## Limitation in this MVP
 

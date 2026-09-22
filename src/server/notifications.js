@@ -13,7 +13,8 @@ export function createNotificationEvent(application, event, principal) {
     body,
     priority = 'normal',
     source,
-    data
+    data,
+    channel
   } = event;
 
   return application.notifications.create({
@@ -24,6 +25,7 @@ export function createNotificationEvent(application, event, principal) {
     body,
     priority,
     source,
-    data
+    data,
+    ...(channel ? { channel } : {})
   }, principal);
 }
