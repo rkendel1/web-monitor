@@ -27,10 +27,6 @@ await writeFile(outputPath, JSON.stringify({
 }, null, 2), { mode: 0o600 });
 
 console.log(JSON.stringify({
-  tenantId,
-  name,
-  scopes,
-  keyPrefix: apiKey.keyPrefix,
   outputPath
 }, null, 2));
 
