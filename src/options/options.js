@@ -21,7 +21,8 @@ function setStatus(message, isError = false) {
 
 function formatObservation(observation) {
   const dateStr = new Date(observation.observedAt).toLocaleString();
-  const isAuthFailure = observation.observation?.authentication === 'required';
+  const authState = observation.observation?.authentication;
+  const isAuthFailure = authState === 'required' || authState === 'authentication_required';
   const executionText = observation.observation?.execution === 'authenticated_browser' ? ' [Auth Browser]' : '';
 
   if (isAuthFailure) {

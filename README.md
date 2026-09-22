@@ -119,3 +119,11 @@ Our architecture enforces a strict security boundary to protect user credentials
 * **Content Script Sandboxing**: Content scripts remain "dumb" and never receive AppPort API keys, access tokens, AuthBoundry credentials, or secrets. All authenticated calls to AppPort Services are made strictly by the service worker.
 * **Authentication Expiration Protection**: If a session expires, the monitor's state transitions to `AUTHENTICATION_REQUIRED` and the user is notified. Failed authentication attempts are blocked from becoming target-page observations, preventing false condition matches.
 
+### Permission Model & Minimal Access
+
+We adhere strictly to Chrome's extension security guidance by requesting the minimum browser permissions required for features:
+
+* **Explicit Scope**: The extension only accesses pages that you explicitly choose to monitor.
+* **Narrow Host Permissions**: While `<all_urls>` is declared to enable content scripts to load on monitored pages, the extension interacts with and inspects only the specific target URLs configured for active, registered monitors.
+* **activeTab Permission**: Used for user-initiated monitor creation to avoid requesting broad or unnecessary early host permissions before the user registers a target page.
+
