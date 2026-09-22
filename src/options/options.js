@@ -65,7 +65,7 @@ async function loadMonitors() {
             <div>
               <strong>${monitor.pageTitle}</strong>
               <div>${conditionLabel(monitor.condition)}</div>
-              <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText}</div>
+              <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText} · Notifications: ${(monitor.notificationPolicy?.channels ?? ['browser']).join(', ')}</div>
               ${warningBox}
             </div>
             <div class="row">
@@ -110,6 +110,7 @@ async function loadMonitorDetail(id) {
       <div><strong>Condition:</strong> ${conditionLabel(monitor.condition)}</div>
       <div><strong>Status:</strong> ${statusText}</div>
       <div><strong>Schedule:</strong> ${intervalLabel(monitor.scheduleInterval)}</div>
+      <div><strong>Notifications:</strong> ${(monitor.notificationPolicy?.channels ?? ['browser']).join(', ')}</div>
       <div><strong>Last checked:</strong> ${monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt).toLocaleString() : 'Not yet checked'}</div>
       <div><strong>Current:</strong> ${monitor.lastObservation?.numericValue != null ? `$${monitor.lastObservation.numericValue}` : monitor.lastObservation?.valueText || 'No observation yet'}</div>
       <div><strong>History</strong></div>

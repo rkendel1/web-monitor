@@ -141,13 +141,12 @@ async function deliverBrowserNotifications() {
   let changed = false;
 
   for (const notification of page.items ?? []) {
+    if (!notification.data?.deliveryPolicy?.channels?.includes('browser')) {
+      continue;
+    }
     if (shownNotifications[notification.id]) {
       continue;
     }
-
-    shownNotifications[notification.id] = new Date().toISOString();
-    notificationLinks[notification.id] = notification.data?.url || notification.source?.url || null;
-    changed = true;
 
     await chrome.notifications.create(notification.id, {
       type: 'basic',
@@ -156,6 +155,9 @@ async function deliverBrowserNotifications() {
       message: notification.body || 'A monitor changed.',
       contextMessage: notification.data?.condition ? String(notification.data.condition) : 'AppPort Web Monitor'
     });
+    shownNotifications[notification.id] = new Date().toISOString();
+    notificationLinks[notification.id] = notification.data?.url || notification.source?.url || null;
+    changed = true;
   }
 
   if (changed) {
