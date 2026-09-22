@@ -1,4 +1,6 @@
 import { appport } from '@appport/services';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 const tenantId = process.env.APPPORT_TENANT_ID ?? 'development';
 const name = process.env.APPPORT_KEY_NAME ?? 'web-monitor-extension';
@@ -13,12 +15,23 @@ const apiKey = await application.api.keys.createApiKey({
   createdBy
 });
 
-console.log(JSON.stringify({
+const outputDirectory = resolve('.appport');
+const outputPath = resolve(outputDirectory, 'extension-api-key.json');
+await mkdir(outputDirectory, { recursive: true });
+await writeFile(outputPath, JSON.stringify({
   tenantId,
   name,
   scopes,
   keyPrefix: apiKey.keyPrefix,
   secret: apiKey.secret
+}, null, 2), { mode: 0o600 });
+
+console.log(JSON.stringify({
+  tenantId,
+  name,
+  scopes,
+  keyPrefix: apiKey.keyPrefix,
+  outputPath
 }, null, 2));
 
 await application.close();

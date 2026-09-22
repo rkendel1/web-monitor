@@ -64,7 +64,7 @@ Create a key for the extension with the existing AppPort API-key capability:
 npm run create:api-key
 ```
 
-Save the returned `tenantId` and `secret`.
+The command writes the extension credential to `.appport/extension-api-key.json` and prints the file path plus the key prefix. Use the `tenantId` and `secret` from that local file when configuring the extension.
 
 ## Load the unpacked extension
 
