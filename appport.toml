@@ -1,0 +1,81 @@
+# AppPort application contract
+version = "1"
+
+[application]
+name = "web-monitor"
+description = "AppPort Web Monitor MVP"
+runtime = "node"
+
+[deployment]
+mode = "local"
+storage = "durable"
+distributed = true
+
+[state]
+enabled = true
+authority = "feltdb"
+namespace = "web-monitor"
+
+[tenant]
+mode = "required"
+default = "development"
+
+[http]
+enabled = true
+host = "127.0.0.1"
+port = 8787
+
+[cors]
+enabled = true
+origins = ["*"]
+
+[api]
+enabled = true
+
+[api.keys]
+enabled = true
+scopes = [
+  "monitors.read",
+  "monitors.write",
+  "notifications.read",
+  "notifications.write"
+]
+
+[jobs]
+enabled = true
+
+[jobs.execution]
+enabled = true
+max_attempts = 3
+
+[jobs.types]
+"monitor.check" = { timeout_ms = 30000 }
+
+[notifications]
+enabled = true
+
+[events]
+enabled = true
+
+[events.streaming]
+enabled = true
+transport = "sse"
+
+[authorization]
+enabled = true
+default = "deny"
+
+[observability]
+enabled = true
+
+[lifecycle]
+managed = false
+
+[development]
+mail = "local"
+webhooks = "local"
+jobs = "local"
+
+use api
+use jobs
+use notifications

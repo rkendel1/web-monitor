@@ -1,0 +1,173 @@
+flow_version 1
+
+app web-monitor {
+  collection ApiKeys {
+    id: uuid
+    tenant_id: text
+    name: text
+    key_prefix: text
+    secret_hash: text
+    scopes: text
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: datetime
+    last_used_at: datetime
+    created_by: text
+    index tenant_idx using hash (tenant_id)
+    index prefix_idx using hash (key_prefix)
+  }
+
+  collection ApiKeyPrefixes {
+    id: text
+    api_key_id: uuid
+    tenant_id: text
+    created_at: datetime
+    index tenant_prefix_idx using hash (tenant_id)
+  }
+
+  collection ApiKeyAuditEvents {
+    id: uuid
+    type: text
+    credential_id: uuid
+    tenant_id: text
+    principal_id: text
+    timestamp: datetime
+    result: text
+    index tenant_timestamp_idx using hash (tenant_id)
+  }
+
+  collection Jobs {
+    id: uuid
+    tenant_id: text
+    type: text
+    payload: json
+    status: text
+    run_at: datetime
+    attempt_count: integer
+    max_attempts: integer
+    created_at: datetime
+    started_at: datetime
+    completed_at: datetime
+    next_attempt_at: datetime
+    lease_owner: text
+    lease_expires_at: datetime
+    last_error: text
+    index tenant_idx using hash (tenant_id)
+    index status_idx using hash (status)
+    index runAt_idx using sorted (run_at)
+  }
+
+  collection JobSchedules {
+    id: uuid
+    tenant_id: text
+    type: text
+    payload: json
+    interval: text
+    next_run_at: datetime
+    enabled: boolean
+    created_at: datetime
+    created_by: text
+    index tenant_idx using hash (tenant_id)
+    index enabled_idx using hash (enabled)
+    index nextRunAt_idx using sorted (next_run_at)
+  }
+
+  collection JobAuditEvents {
+    id: uuid
+    type: text
+    job_id: uuid
+    schedule_id: uuid
+    tenant_id: text
+    principal_id: text
+    timestamp: datetime
+    result: text
+    details: json
+    index tenant_idx using hash (tenant_id)
+  }
+
+  collection Notifications {
+    id: uuid
+    tenant_id: text
+    recipient: text
+    type: text
+    title: text
+    body: text
+    data: json
+    source: json
+    priority: text
+    created_at: datetime
+    read_at: datetime
+    dismissed_at: datetime
+    index tenant_recipient_created_idx using hash (tenant_id, recipient, created_at)
+    index tenant_recipient_read_idx using hash (tenant_id, recipient, read_at)
+    index tenant_recipient_priority_idx using hash (tenant_id, recipient, priority)
+  }
+
+  collection NotificationDeliveries {
+    id: uuid
+    tenant_id: text
+    notification_id: uuid
+    channel: text
+    status: text
+    attempted_at: datetime
+    delivered_at: datetime
+    error: text
+    index tenant_idx using hash (tenant_id)
+    index notification_idx using hash (notification_id)
+  }
+
+  collection NotificationAuditEvents {
+    id: uuid
+    type: text
+    notification_id: uuid
+    tenant_id: text
+    recipient: text
+    principal_id: text
+    timestamp: datetime
+    result: text
+    index tenant_idx using hash (tenant_id)
+  }
+
+  collection Monitors {
+    id: uuid
+    tenantId: text
+    ownerId: text
+    url: url
+    pageTitle: text
+    conditionInput: text
+    condition: json
+    target: json
+    scheduleInterval: text
+    scheduleId: uuid
+    status: text
+    notes: text
+    createdAt: datetime
+    updatedAt: datetime
+    lastCheckedAt: datetime
+    lastObservation: json
+    lastEvaluation: json
+    triggeredAt: datetime
+    deletedAt: datetime
+    index tenant_idx using hash (tenantId)
+    index owner_idx using hash (ownerId)
+    index status_idx using hash (status)
+    index schedule_idx using hash (scheduleId)
+  }
+
+  collection MonitorObservations {
+    id: uuid
+    monitorId: uuid
+    tenantId: text
+    ownerId: text
+    observedAt: datetime
+    observation: json
+    evaluation: json
+    triggered: boolean
+    jobId: uuid
+    source: text
+    index tenant_idx using hash (tenantId)
+    index monitor_idx using hash (monitorId)
+    index owner_idx using hash (ownerId)
+    index observed_idx using sorted (observedAt)
+  }
+}
