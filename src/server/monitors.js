@@ -22,7 +22,7 @@ function monitorStatus(monitor, nextTriggered, observation) {
   if (monitor.status === 'paused') {
     return 'paused';
   }
-  if (observation?.authentication === 'required') {
+  if (observation?.authentication === 'required' || observation?.authentication === 'authentication_required') {
     return 'AUTHENTICATION_REQUIRED';
   }
   return nextTriggered ? 'triggered' : 'active';
@@ -316,7 +316,7 @@ export function createMonitorRoutes(application) {
         return { ok: true };
       }
 
-      if (sanitizedObservation.authentication === 'required') {
+      if (sanitizedObservation.authentication === 'required' || sanitizedObservation.authentication === 'authentication_required') {
         const evaluation = { triggered: false, summary: 'Sign-in required' };
         await recordObservation(application, monitor, sanitizedObservation, evaluation, {
           observedAt: sanitizedObservation.observedAt || new Date().toISOString(),

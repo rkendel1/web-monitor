@@ -111,7 +111,7 @@ function observePage(condition, target) {
 
   if (authState === 'required') {
     return {
-      authentication: 'required',
+      authentication: 'authentication_required',
       observedAt: new Date().toISOString(),
       url: location.href,
       execution: 'authenticated_browser'
@@ -193,7 +193,7 @@ function observePage(condition, target) {
   }
 
   return {
-    authentication: authState,
+    authentication: authState === 'required' ? 'authentication_required' : authState,
     observedAt: new Date().toISOString(),
     url: location.href,
     execution: 'authenticated_browser',
@@ -275,7 +275,7 @@ function captureDraft(condition) {
 
   return {
     ...draftResult,
-    authentication: authState
+    authentication: authState === 'required' ? 'authentication_required' : authState
   };
 }
 
@@ -283,7 +283,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'APPPORT_DETECT_AUTH') {
     try {
       const state = detectAuthStateOnDom();
-      sendResponse({ ok: true, data: { state } });
+      const mappedState = state === 'required' ? 'authentication_required' : state;
+      sendResponse({ ok: true, data: { state: mappedState } });
     } catch (error) {
       sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
     }

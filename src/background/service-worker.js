@@ -249,7 +249,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const initialEvaluation = evaluateCondition(condition, draft.initialObservation, null);
           
           const authState = draft.authentication ?? 'public';
-          const observationMode = (authState === 'authenticated' || authState === 'required')
+          const observationMode = (authState === 'authenticated' || authState === 'required' || authState === 'authentication_required')
             ? 'authenticated_browser'
             : 'public';
 

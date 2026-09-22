@@ -253,6 +253,91 @@ test('Session expiration lifecycle (ACTIVE -> AUTHENTICATION_REQUIRED -> notific
   assert.equal(monitorRestored.status, 'active');
 });
 
+test('Session expiration lifecycle with explicit authentication_required (ACTIVE -> AUTHENTICATION_REQUIRED -> notification -> user re-authenticates -> ACTIVE)', async () => {
+  const { app, store, notifications } = createMockApp();
+  const routes = createMonitorRoutes(app);
+
+  const monitorId = 'monitor-auth-explicit';
+  const tenantId = 'test-tenant';
+  const ownerId = 'user-123';
+  const principal = { principalId: ownerId, scopes: ['monitors.write', 'monitors.read'] };
+
+  // Seed monitor
+  await app.state.collection('Monitors').insert({
+    id: monitorId,
+    tenantId,
+    ownerId,
+    url: 'https://example.com/private',
+    pageTitle: 'Private Dashboard',
+    condition: { type: 'text_appears', text: 'Success' },
+    status: 'active',
+    scheduleInterval: '1h'
+  }, monitorId);
+
+  // 1. Trigger check resulting in expired session (authentication_required)
+  const pendingId = 'pending-auth-explicit-1';
+  await app.state.collection('PendingObservations').insert({
+    id: pendingId,
+    monitorId,
+    tenantId,
+    ownerId,
+    url: 'https://example.com/private',
+    condition: { type: 'text_appears', text: 'Success' }
+  }, pendingId);
+
+  const submitRoute = routes['POST /api/observations/submit'];
+  await submitRoute({
+    tenantId,
+    principal,
+    body: {
+      pendingId,
+      observation: {
+        authentication: 'authentication_required',
+        observedAt: new Date().toISOString(),
+        url: 'https://example.com/login?redirect=%2Fprivate',
+        execution: 'authenticated_browser'
+      }
+    }
+  });
+
+  // Verify monitor is AUTHENTICATION_REQUIRED and notification sent
+  const monitorExpired = await app.state.collection('Monitors').get(monitorId);
+  assert.equal(monitorExpired.status, 'AUTHENTICATION_REQUIRED');
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].type, 'monitor.auth_expired');
+
+  // 2. User re-authenticates and next check succeeds
+  const pendingId2 = 'pending-auth-explicit-2';
+  await app.state.collection('PendingObservations').insert({
+    id: pendingId2,
+    monitorId,
+    tenantId,
+    ownerId,
+    url: 'https://example.com/private',
+    condition: { type: 'text_appears', text: 'Success' }
+  }, pendingId2);
+
+  await submitRoute({
+    tenantId,
+    principal,
+    body: {
+      pendingId: pendingId2,
+      observation: {
+        authentication: 'authenticated',
+        observedAt: new Date().toISOString(),
+        url: 'https://example.com/private',
+        execution: 'authenticated_browser',
+        present: false,
+        valueText: 'Success'
+      }
+    }
+  });
+
+  // Verify monitor transitions back to active
+  const monitorRestored = await app.state.collection('Monitors').get(monitorId);
+  assert.equal(monitorRestored.status, 'active');
+});
+
 test('Safety boundary (no credentials, cookies, headers, or secrets)', async () => {
   const { app } = createMockApp();
   const routes = createMonitorRoutes(app);
