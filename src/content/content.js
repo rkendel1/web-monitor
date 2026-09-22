@@ -86,7 +86,7 @@ function detectAuthStateOnDom() {
                       url.toLowerCase().includes('logout');
   
   if (hasPasswordInput || isLoginUrl) {
-    return 'required';
+    return 'authentication_required';
   }
   
   const bodyText = document.body.innerText || '';
@@ -109,7 +109,7 @@ function observePage(condition, target) {
   const pageText = visibleText(document.body.innerText);
   const authState = detectAuthStateOnDom();
 
-  if (authState === 'required') {
+  if (authState === 'authentication_required') {
     return {
       authentication: 'authentication_required',
       observedAt: new Date().toISOString(),
@@ -193,7 +193,7 @@ function observePage(condition, target) {
   }
 
   return {
-    authentication: authState === 'required' ? 'authentication_required' : authState,
+    authentication: authState,
     observedAt: new Date().toISOString(),
     url: location.href,
     execution: 'authenticated_browser',
@@ -275,7 +275,7 @@ function captureDraft(condition) {
 
   return {
     ...draftResult,
-    authentication: authState === 'required' ? 'authentication_required' : authState
+    authentication: authState
   };
 }
 
@@ -283,8 +283,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'APPPORT_DETECT_AUTH') {
     try {
       const state = detectAuthStateOnDom();
-      const mappedState = state === 'required' ? 'authentication_required' : state;
-      sendResponse({ ok: true, data: { state: mappedState } });
+      sendResponse({ ok: true, data: { state } });
     } catch (error) {
       sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
     }

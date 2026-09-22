@@ -4,7 +4,7 @@ This repository contains a minimal end-to-end MVP for an AppPort-backed web moni
 
 - a local AppPort service that persists monitors and observations in FeltDB-backed AppPort state
 - recurring AppPort jobs that fetch monitored pages and evaluate deterministic monitor conditions
-- AppPort notifications that the Chrome extension turns into browser notifications
+- durable AppPort notification events, with browser notifications as one delivery adapter
 - a Manifest V3 Chrome extension for creating, viewing, pausing, resuming, and deleting monitors
 
 ## What ships in this MVP
@@ -35,7 +35,7 @@ The extension provides:
 - current-page detection through a content script
 - a popup for configuring the AppPort endpoint and creating a monitor
 - an options page for viewing monitor history and lifecycle controls
-- a service worker that owns AppPort credentials and syncs AppPort notifications into Chrome notifications
+- a service worker that owns AppPort credentials and provides the Chrome notification adapter
 
 ## Supported MVP conditions
 
@@ -87,8 +87,13 @@ The command writes the extension credential to `.appport/extension-api-key.json`
 5. The service creates a durable monitor record plus an AppPort recurring job schedule
 6. AppPort persists monitor state and every observation through FeltDB
 7. When the condition transitions to true, AppPort creates a notification
-8. The extension service worker converts that AppPort notification into a Chrome notification
+8. The browser adapter in the extension converts that AppPort event into a Chrome notification
 9. Clicking the browser notification opens the monitored URL
+
+Notifications are durable AppPort events. Their creation is independent of delivery,
+so future adapters (such as email, webhook, or mobile delivery) can consume the same
+event without changing monitor evaluation or persistence. The extension's browser
+notification adapter is only one consumer of unread events.
 
 ## Limitation in this MVP
 
@@ -106,7 +111,7 @@ Users can monitor pages that require an existing browser login. The extension ob
 
 ### How it Works
 
-1. **Authentication Detection**: When creating a monitor or performing check-ups, the extension analyzes page characteristics to distinguish between `public`, `authenticated`, `required` (redirected to login), or `unknown` auth states.
+1. **Authentication Detection**: When creating a monitor or performing check-ups, the extension analyzes page characteristics to distinguish between `public`, `authenticated`, `authentication_required` (redirected to login), or `unknown` auth states. The legacy `required` value is accepted only at compatibility boundaries and normalized immediately.
 2. **Scheduled Checks**: If a monitor is in `authenticated_browser` observation mode, the AppPort Service schedules check-up jobs by putting them in a queue of pending observations.
 3. **Browser Integration**: The service worker periodically polls for pending observations, opens or activates an appropriate browser tab under the user's existing authenticated context, triggers a content script to run the check safely, and submits the structured observation back to AppPort Services.
 
@@ -118,6 +123,7 @@ Our architecture enforces a strict security boundary to protect user credentials
 * **FeltDB and AppPort Isolation**: No cookies, site passwords, or authorization headers are ever transmitted to AppPort Services or written to FeltDB. All observation payloads are sanitized on the server before database write.
 * **Content Script Sandboxing**: Content scripts remain "dumb" and never receive AppPort API keys, access tokens, AuthBoundry credentials, or secrets. All authenticated calls to AppPort Services are made strictly by the service worker.
 * **Authentication Expiration Protection**: If a session expires, the monitor's state transitions to `AUTHENTICATION_REQUIRED` and the user is notified. Failed authentication attempts are blocked from becoming target-page observations, preventing false condition matches.
+* **Browser credential boundary**: The browser owns the authenticated website session. The extension observes the resulting page but never collects or transmits passwords, cookies, authorization headers, refresh tokens, or other website credentials.
 
 ### Permission Model & Minimal Access
 
@@ -126,4 +132,3 @@ We adhere strictly to Chrome's extension security guidance by requesting the min
 * **Explicit Scope**: The extension only accesses pages that you explicitly choose to monitor.
 * **Narrow Host Permissions**: While `<all_urls>` is declared to enable content scripts to load on monitored pages, the extension interacts with and inspects only the specific target URLs configured for active, registered monitors.
 * **activeTab Permission**: Used for user-initiated monitor creation to avoid requesting broad or unnecessary early host permissions before the user registers a target page.
-

@@ -50,7 +50,7 @@ async function loadPage() {
     const authDetection = await sendMessage({ type: 'APPPORT_DETECT_AUTH' }).catch(() => null);
     const authWarning = document.querySelector('#auth-warning');
     const authState = authDetection?.data?.state;
-    if (authState === 'authenticated' || authState === 'required' || authState === 'authentication_required') {
+    if (authState === 'authenticated' || authState === 'authentication_required') {
       authWarning.style.display = 'block';
     } else {
       authWarning.style.display = 'none';
