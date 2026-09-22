@@ -20,11 +20,29 @@ function setStatus(message, isError = false) {
 }
 
 function formatObservation(observation) {
+  const dateStr = new Date(observation.observedAt).toLocaleString();
+  const isAuthFailure = observation.observation?.authentication === 'required';
+  const executionText = observation.observation?.execution === 'authenticated_browser' ? ' [Auth Browser]' : '';
+
+  if (isAuthFailure) {
+    return `<li style="color: #b42318; background-color: #fcf1f1; border-left: 3px solid #fecdca; padding: 4px 8px; margin-bottom: 4px; list-style-type: none;">
+              ${dateStr} · <strong>Authentication Failure (Sign-in required)</strong>${executionText}
+            </li>`;
+  }
+
   const value = observation.observation?.numericValue != null
     ? `$${observation.observation.numericValue}`
     : observation.observation?.valueText || 'No value';
-  const evaluation = observation.evaluation?.triggered ? 'Triggered' : '';
-  return `<li>${new Date(observation.observedAt).toLocaleString()} · ${value} ${evaluation}</li>`;
+
+  if (observation.evaluation?.triggered) {
+    return `<li style="color: #0b6e4f; background-color: #e6f4ea; border-left: 3px solid #34a853; padding: 4px 8px; margin-bottom: 4px; list-style-type: none;">
+              ${dateStr} · <strong>Condition Match</strong> (Value: ${value})${executionText} · Notification Sent
+            </li>`;
+  }
+
+  return `<li style="padding: 4px 8px; margin-bottom: 4px; list-style-type: none;">
+            ${dateStr} · Target-page observation (Value: ${value})${executionText}
+          </li>`;
 }
 
 async function loadMonitors() {
@@ -32,13 +50,22 @@ async function loadMonitors() {
   const items = result.items ?? [];
 
   listElement.innerHTML = items.length
-    ? items.map((monitor) => `
+    ? items.map((monitor) => {
+        const isAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
+        const statusText = isAuthRequired ? 'Sign-in required' : monitor.status;
+        const warningBox = isAuthRequired
+          ? `<div class="auth-required-box" style="margin-top: 6px; padding: 6px 8px; background-color: #fef0c7; border: 1px solid #fec84b; border-radius: 4px; font-size: 11px; color: #b54708;">
+               <strong>Sign-in required</strong><br>Open the page, sign in, and this monitor will continue automatically.
+             </div>`
+          : '';
+        return `
         <article class="card" data-monitor-id="${monitor.id}">
           <div class="row between">
             <div>
               <strong>${monitor.pageTitle}</strong>
               <div>${conditionLabel(monitor.condition)}</div>
-              <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${monitor.status}</div>
+              <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText}</div>
+              ${warningBox}
             </div>
             <div class="row">
               <button class="secondary" data-action="${monitor.status === 'paused' ? 'resume' : 'pause'}" data-monitor-id="${monitor.id}" type="button">${monitor.status === 'paused' ? 'Resume' : 'Pause'}</button>
@@ -46,7 +73,7 @@ async function loadMonitors() {
             </div>
           </div>
         </article>
-      `).join('')
+      `}).join('')
     : '<p class="muted">No monitors yet.</p>';
 
   if (!selectedMonitorId && items[0]) {
@@ -64,17 +91,28 @@ async function loadMonitorDetail(id) {
   selectedMonitorId = id;
   const result = await sendMessage({ type: 'APPPORT_GET_MONITOR', id });
   const { monitor, observations } = result;
+
+  const isAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
+  const statusText = isAuthRequired ? 'Sign-in required' : monitor.status;
+  const warningBox = isAuthRequired
+    ? `<div style="padding: 10px; background-color: #fef0c7; border: 1px solid #fec84b; border-radius: 6px; color: #b54708; margin-bottom: 10px;">
+         <strong>Sign-in required</strong>
+         <p style="margin: 4px 0 0 0; font-size: 13px;">Open the page, sign in, and this monitor will continue automatically.</p>
+       </div>`
+    : '';
+
   detailElement.innerHTML = `
     <div class="stack">
+      ${warningBox}
       <strong>${monitor.pageTitle}</strong>
       <div>${monitor.url}</div>
       <div><strong>Condition:</strong> ${conditionLabel(monitor.condition)}</div>
-      <div><strong>Status:</strong> ${monitor.status}</div>
+      <div><strong>Status:</strong> ${statusText}</div>
       <div><strong>Schedule:</strong> ${intervalLabel(monitor.scheduleInterval)}</div>
       <div><strong>Last checked:</strong> ${monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt).toLocaleString() : 'Not yet checked'}</div>
       <div><strong>Current:</strong> ${monitor.lastObservation?.numericValue != null ? `$${monitor.lastObservation.numericValue}` : monitor.lastObservation?.valueText || 'No observation yet'}</div>
       <div><strong>History</strong></div>
-      <ul>${(observations ?? []).map(formatObservation).join('') || '<li>No observations yet.</li>'}</ul>
+      <ul style="padding-left: 0;">${(observations ?? []).map(formatObservation).join('') || '<li>No observations yet.</li>'}</ul>
     </div>
   `;
 }

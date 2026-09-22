@@ -74,13 +74,142 @@ function findElementByText(text, onlyButtons = false) {
   };
 }
 
-function captureDraft(condition) {
+function detectAuthStateOnDom() {
+  const hasPasswordInput = document.querySelector('input[type="password"]') !== null;
+  const url = location.href;
+  const isLoginUrl = url.toLowerCase().includes('login') || 
+                      url.toLowerCase().includes('signin') || 
+                      url.toLowerCase().includes('signup') || 
+                      url.toLowerCase().includes('auth') || 
+                      url.toLowerCase().includes('sign-in') || 
+                      url.toLowerCase().includes('sign-out') || 
+                      url.toLowerCase().includes('logout');
+  
+  if (hasPasswordInput || isLoginUrl) {
+    return 'required';
+  }
+  
+  const bodyText = document.body.innerText || '';
+  const hasLogout = /sign\s*out/i.test(bodyText) || 
+                    /log\s*out/i.test(bodyText) || 
+                    /logout/i.test(bodyText) || 
+                    /logoff/i.test(bodyText) || 
+                    /my\s*account/i.test(bodyText) || 
+                    /user\s*profile/i.test(bodyText) || 
+                    /dashboard/i.test(bodyText) || 
+                    /welcome,\s*\w+/i.test(bodyText);
+  if (hasLogout) {
+    return 'authenticated';
+  }
+  
+  return 'public';
+}
+
+function observePage(condition, target) {
   const pageText = visibleText(document.body.innerText);
+  const authState = detectAuthStateOnDom();
+
+  if (authState === 'required') {
+    return {
+      authentication: 'required',
+      observedAt: new Date().toISOString(),
+      url: location.href,
+      execution: 'authenticated_browser'
+    };
+  }
+
+  let observation = {};
 
   switch (condition.type) {
     case 'numeric_threshold': {
+      let selectedText = '';
+      if (target?.selector) {
+        const element = document.querySelector(target.selector);
+        if (element) {
+          selectedText = visibleText(element.textContent);
+        }
+      }
+      if (!selectedText) {
+        const candidate = firstCurrencyCandidate();
+        selectedText = candidate.valueText;
+      }
+      observation = {
+        valueText: selectedText,
+        numericValue: Number.parseFloat((selectedText.match(/([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/)?.[1] || '').replace(/,/g, '')) || null,
+        selector: target?.selector ?? null
+      };
+      break;
+    }
+    case 'text_appears':
+    case 'text_disappears': {
+      observation = {
+        valueText: condition.text,
+        present: pageText.toLowerCase().includes(condition.text.toLowerCase())
+      };
+      break;
+    }
+    case 'value_changes': {
+      let selectedText = '';
+      if (target?.selector) {
+        const element = document.querySelector(target.selector);
+        if (element) {
+          selectedText = visibleText(element.textContent);
+        }
+      }
+      if (!selectedText && target?.label) {
+        const match = findElementByText(target.label, false);
+        selectedText = match.valueText;
+      }
+      observation = {
+        valueText: selectedText || target?.label || '',
+        selector: target?.selector ?? null
+      };
+      break;
+    }
+    case 'element_appears': {
+      let present = false;
+      let selectedText = '';
+      if (target?.selector) {
+        const element = document.querySelector(target.selector);
+        present = element !== null;
+        if (element) {
+          selectedText = visibleText(element.textContent);
+        }
+      }
+      if (!present) {
+        const match = findElementByText(condition.text, condition.element === 'button');
+        present = match.present;
+        selectedText = match.valueText;
+      }
+      observation = {
+        present,
+        valueText: selectedText,
+        selector: target?.selector ?? null
+      };
+      break;
+    }
+    default:
+      observation = { valueText: '' };
+  }
+
+  return {
+    authentication: authState,
+    observedAt: new Date().toISOString(),
+    url: location.href,
+    execution: 'authenticated_browser',
+    ...observation
+  };
+}
+
+function captureDraft(condition) {
+  const pageText = visibleText(document.body.innerText);
+  const authState = detectAuthStateOnDom();
+
+  let draftResult;
+  switch (condition.type) {
+    case 'numeric_threshold': {
       const candidate = firstCurrencyCandidate();
-      return {
+      draftResult = {
         target: {
           selector: candidate.selector,
           label: condition.target
@@ -91,10 +220,11 @@ function captureDraft(condition) {
           selector: candidate.selector
         }
       };
+      break;
     }
     case 'text_appears':
     case 'text_disappears':
-      return {
+      draftResult = {
         target: {
           text: condition.text
         },
@@ -103,9 +233,10 @@ function captureDraft(condition) {
           present: pageText.toLowerCase().includes(condition.text.toLowerCase())
         }
       };
+      break;
     case 'value_changes': {
       const match = findElementByText(condition.target, false);
-      return {
+      draftResult = {
         target: {
           selector: match.selector,
           label: condition.target
@@ -115,10 +246,11 @@ function captureDraft(condition) {
           selector: match.selector
         }
       };
+      break;
     }
     case 'element_appears': {
       const match = findElementByText(condition.text, condition.element === 'button');
-      return {
+      draftResult = {
         target: {
           selector: match.selector,
           text: condition.text,
@@ -130,18 +262,44 @@ function captureDraft(condition) {
           selector: match.selector
         }
       };
+      break;
     }
     default:
-      return {
+      draftResult = {
         target: {},
         initialObservation: {
           valueText: ''
         }
       };
   }
+
+  return {
+    ...draftResult,
+    authentication: authState
+  };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'APPPORT_DETECT_AUTH') {
+    try {
+      const state = detectAuthStateOnDom();
+      sendResponse({ ok: true, data: { state } });
+    } catch (error) {
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  if (message?.type === 'APPPORT_OBSERVE_PAGE') {
+    try {
+      const observation = observePage(message.condition, message.target);
+      sendResponse({ ok: true, data: observation });
+    } catch (error) {
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
   if (message?.type !== 'APPPORT_CAPTURE_MONITOR_DRAFT') {
     return;
   }

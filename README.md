@@ -99,3 +99,23 @@ Scheduled checks fetch and evaluate ordinary server-rendered HTML pages. Some he
 ```bash
 npm test
 ```
+
+## Authenticated Page Monitoring
+
+Users can monitor pages that require an existing browser login. The extension observes authenticated pages using the user’s existing browser session without asking the user to provide site credentials or copy authentication tokens into the extension.
+
+### How it Works
+
+1. **Authentication Detection**: When creating a monitor or performing check-ups, the extension analyzes page characteristics to distinguish between `public`, `authenticated`, `required` (redirected to login), or `unknown` auth states.
+2. **Scheduled Checks**: If a monitor is in `authenticated_browser` observation mode, the AppPort Service schedules check-up jobs by putting them in a queue of pending observations.
+3. **Browser Integration**: The service worker periodically polls for pending observations, opens or activates an appropriate browser tab under the user's existing authenticated context, triggers a content script to run the check safely, and submits the structured observation back to AppPort Services.
+
+### Security Model & Safety Boundaries
+
+Our architecture enforces a strict security boundary to protect user credentials:
+
+* **No Credentials Leakage**: The extension never requests, stores, or handles the target site's passwords, raw authentication cookies, or tokens.
+* **FeltDB and AppPort Isolation**: No cookies, site passwords, or authorization headers are ever transmitted to AppPort Services or written to FeltDB. All observation payloads are sanitized on the server before database write.
+* **Content Script Sandboxing**: Content scripts remain "dumb" and never receive AppPort API keys, access tokens, AuthBoundry credentials, or secrets. All authenticated calls to AppPort Services are made strictly by the service worker.
+* **Authentication Expiration Protection**: If a session expires, the monitor's state transitions to `AUTHENTICATION_REQUIRED` and the user is notified. Failed authentication attempts are blocked from becoming target-page observations, preventing false condition matches.
+

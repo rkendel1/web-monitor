@@ -4,6 +4,7 @@ import { evaluateObservation, observeHtml } from './observation.js';
 
 const MONITORS = 'Monitors';
 const OBSERVATIONS = 'MonitorObservations';
+const PENDING_OBSERVATIONS = 'PendingObservations';
 
 function collection(application, name) {
   return application.state.collection(name);
@@ -14,12 +15,15 @@ function parseUrlQuery(requestUrl, name) {
   return url.searchParams.get(name);
 }
 
-function monitorStatus(monitor, nextTriggered) {
+function monitorStatus(monitor, nextTriggered, observation) {
   if (monitor.deletedAt) {
     return 'deleted';
   }
   if (monitor.status === 'paused') {
     return 'paused';
+  }
+  if (observation?.authentication === 'required') {
+    return 'AUTHENTICATION_REQUIRED';
   }
   return nextTriggered ? 'triggered' : 'active';
 }
@@ -88,13 +92,15 @@ async function recordObservation(application, monitor, observation, evaluation, 
     source: options.source ?? 'job'
   }, observationId);
 
+  const nextStatus = monitorStatus(monitor, evaluation.triggered, observation);
+
   const updatedMonitor = {
     ...monitor,
     updatedAt: observedAt,
     lastCheckedAt: observedAt,
     lastObservation: observation,
     lastEvaluation: evaluation,
-    status: monitorStatus(monitor, evaluation.triggered),
+    status: nextStatus,
     ...(evaluation.triggered ? { triggeredAt: observedAt } : {})
   };
 
@@ -107,8 +113,28 @@ async function recordObservation(application, monitor, observation, evaluation, 
     ...(updatedMonitor.triggeredAt ? { triggeredAt: updatedMonitor.triggeredAt } : {})
   });
 
+  const previouslyAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
+  if (nextStatus === 'AUTHENTICATION_REQUIRED' && !previouslyAuthRequired) {
+    await application.notifications.create({
+      tenantId: monitor.tenantId,
+      recipient: monitor.ownerId,
+      type: 'monitor.auth_expired',
+      title: 'Sign-in required',
+      body: `${monitor.pageTitle}: Open the page, sign in, and this monitor will continue automatically.`,
+      priority: 'high',
+      source: { type: 'monitor', id: monitor.id },
+      data: {
+        monitorId: monitor.id,
+        url: monitor.url,
+        condition: conditionLabel(monitor.condition),
+        status: 'AUTHENTICATION_REQUIRED'
+      },
+      channel: 'browser'
+    }, systemPrincipal(monitor.tenantId));
+  }
+
   const previouslyTriggered = Boolean(monitor.lastEvaluation?.triggered);
-  if (!options.skipNotification && !previouslyTriggered && evaluation.triggered) {
+  if (!options.skipNotification && !previouslyTriggered && evaluation.triggered && nextStatus !== 'AUTHENTICATION_REQUIRED') {
     const summaryValue = observation.numericValue != null ? `$${observation.numericValue}` : observation.valueText || conditionLabel(monitor.condition);
     await application.notifications.create({
       tenantId: monitor.tenantId,
@@ -151,6 +177,8 @@ async function createMonitor(application, tenantId, principal, input) {
     notes: input.notes ?? '',
     createdAt,
     updatedAt: createdAt,
+    observationMode: input.observationMode ?? 'public',
+    authenticationState: input.authenticationState ?? 'public',
     ...(input.initialObservation ? { lastObservation: input.initialObservation } : {}),
     ...(input.initialEvaluation ? { lastEvaluation: input.initialEvaluation } : {})
   };
@@ -185,6 +213,22 @@ async function createMonitor(application, tenantId, principal, input) {
 export async function runMonitorCheck(application, job) {
   const monitor = await collection(application, MONITORS).get(job.payload?.monitorId);
   if (!monitor || monitor.deletedAt || monitor.status === 'paused') {
+    return;
+  }
+
+  if (monitor.observationMode === 'authenticated_browser') {
+    const pendingId = randomUUID();
+    await collection(application, PENDING_OBSERVATIONS).insert({
+      id: pendingId,
+      monitorId: monitor.id,
+      tenantId: monitor.tenantId,
+      ownerId: monitor.ownerId,
+      url: monitor.url,
+      condition: monitor.condition,
+      target: monitor.target,
+      createdAt: new Date().toISOString(),
+      jobId: job.id
+    }, pendingId);
     return;
   }
 
@@ -224,6 +268,74 @@ export function createMonitorRoutes(application) {
       requireScope(authenticated, 'monitors.read');
       const monitors = await listOwnedMonitors(application, tenantId, authenticated.principalId);
       return { items: monitors };
+    },
+    'GET /api/observations/pending': async ({ tenantId, principal }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.read');
+      const items = await collection(application, PENDING_OBSERVATIONS).find({
+        tenantId,
+        ownerId: authenticated.principalId
+      });
+      return { items };
+    },
+    'POST /api/observations/submit': async ({ tenantId, principal, body }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.write');
+      const { pendingId, observation } = body ?? {};
+      if (!pendingId || !observation) {
+        throw Object.assign(new Error('pendingId and observation are required'), { status: 400, code: 'INVALID_INPUT' });
+      }
+
+      // Sanitize observation to ensure no credentials or secrets ever enter the state
+      const {
+        url, observedAt, execution, authentication,
+        valueText, numericValue, present, selector, error
+      } = observation;
+      const sanitizedObservation = {
+        url, observedAt, execution, authentication,
+        ...(valueText !== undefined ? { valueText } : {}),
+        ...(numericValue !== undefined ? { numericValue } : {}),
+        ...(present !== undefined ? { present } : {}),
+        ...(selector !== undefined ? { selector } : {}),
+        ...(error !== undefined ? { error } : {})
+      };
+
+      const pending = await collection(application, PENDING_OBSERVATIONS).get(pendingId);
+      if (!pending || pending.tenantId !== tenantId || pending.ownerId !== authenticated.principalId) {
+        throw Object.assign(new Error('Pending observation not found'), { status: 404, code: 'NOT_FOUND' });
+      }
+
+      const monitor = await collection(application, MONITORS).get(pending.monitorId);
+      if (!monitor || monitor.deletedAt) {
+        await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
+        throw Object.assign(new Error('Monitor not found or deleted'), { status: 404, code: 'NOT_FOUND' });
+      }
+
+      if (monitor.status === 'paused') {
+        await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
+        return { ok: true };
+      }
+
+      if (sanitizedObservation.authentication === 'required') {
+        const evaluation = { triggered: false, summary: 'Sign-in required' };
+        await recordObservation(application, monitor, sanitizedObservation, evaluation, {
+          observedAt: sanitizedObservation.observedAt || new Date().toISOString(),
+          source: 'extension-polling',
+          jobId: pending.jobId
+        });
+        await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
+        return { ok: true };
+      }
+
+      const evaluation = evaluateObservation(monitor, sanitizedObservation, monitor.lastObservation);
+      await recordObservation(application, monitor, sanitizedObservation, evaluation, {
+        observedAt: sanitizedObservation.observedAt || new Date().toISOString(),
+        source: 'extension-polling',
+        jobId: pending.jobId
+      });
+
+      await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
+      return { ok: true };
     },
     'GET /api/monitor': async ({ tenantId, principal, request }) => {
       const authenticated = requirePrincipal(principal);

@@ -32,6 +32,10 @@
         <h2>This page</h2>
         <p id="page-url" class="muted">Loading current tab…</p>
         <form id="monitor-form" class="stack">
+          <div id="auth-warning" style="display: none; margin-bottom: 12px; padding: 10px; background-color: #fcf1f1; border: 1px solid #fecdca; border-radius: 6px;">
+            <strong style="color: #b42318; font-size: 14px;">This page requires sign-in</strong>
+            <p style="color: #667085; font-size: 12px; margin: 4px 0 0 0; line-height: 1.4;">This monitor uses your existing browser session. We never ask for or store this site’s password.</p>
+          </div>
           <label>
             What should I watch for?
             <input name="condition" type="text" placeholder="price drops below $500" required>
