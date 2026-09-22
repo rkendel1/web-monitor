@@ -19,22 +19,52 @@ function setStatus(message, isError = false) {
   statusElement.style.color = isError ? '#b42318' : '#0b6e4f';
 }
 
+function executionLabel(mode) {
+  if (mode === 'authenticated_browser') {
+    return 'Browser';
+  }
+  if (mode === 'service') {
+    return 'Service';
+  }
+  return mode || 'Unknown';
+}
+
+function availabilityLabel(state) {
+  if (state === 'authentication_required') {
+    return 'Sign-in required';
+  }
+  if (state === 'available') {
+    return 'Available';
+  }
+  if (state === 'unavailable') {
+    return 'Unavailable';
+  }
+  if (state === 'error') {
+    return 'Error';
+  }
+  return state || 'Unknown';
+}
+
 function renderMonitors(items) {
   monitorCountElement.textContent = `${items.length} active monitor${items.length === 1 ? '' : 's'}`;
   monitorListElement.innerHTML = items.length
     ? items.map((monitor) => {
         const isAuthRequired = monitor.executionState === 'authentication_required' || monitor.status === 'AUTHENTICATION_REQUIRED';
-        const statusText = isAuthRequired ? 'Sign-in required' : monitor.executionState || monitor.status;
         const warningBox = isAuthRequired
           ? `<div class="auth-required-box" style="margin-top: 6px; padding: 6px 8px; background-color: #fef0c7; border: 1px solid #fec84b; border-radius: 4px; font-size: 11px; color: #b54708;">
                <strong>Sign-in required</strong><br>Open the page, sign in, and this monitor will continue automatically.
              </div>`
+          : monitor.executionState === 'unavailable'
+            ? `<div class="auth-required-box" style="margin-top: 6px; padding: 6px 8px; background-color: #eff6ff; border: 1px solid #93c5fd; border-radius: 4px; font-size: 11px; color: #1d4ed8;">
+                 <strong>${executionLabel(monitor.execution?.mode ?? monitor.executionMode)} unavailable</strong><br>Monitoring stays active and will resume automatically.
+               </div>`
           : '';
         return `
           <li>
             <strong>${monitor.pageTitle}</strong>
             <div>${conditionLabel(monitor.condition)}</div>
-            <div class="muted">${intervalLabel(monitor.scheduleInterval)} · ${statusText} · Notifications: ${(monitor.notificationPolicy?.channels ?? ['browser']).join(', ')}</div>
+            <div class="muted">Status: ${monitor.status} · Execution: ${executionLabel(monitor.execution?.mode ?? monitor.executionMode)} · Availability: ${availabilityLabel(monitor.executionState)}</div>
+            <div class="muted">${intervalLabel(monitor.scheduleInterval)} · Notifications: ${(monitor.notificationPolicy?.channels ?? ['browser']).join(', ')}</div>
             ${warningBox}
           </li>
         `;

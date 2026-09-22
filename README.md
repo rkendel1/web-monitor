@@ -7,6 +7,10 @@ This repository contains a minimal end-to-end MVP for an AppPort-backed web moni
 - durable AppPort notification events, with browser notifications as one delivery adapter
 - a Manifest V3 Chrome extension for creating, viewing, pausing, resuming, and deleting monitors
 
+A monitor describes **what reality should be observed and when**. An observation
+executor determines **how that reality is obtained**. Browser execution is one
+observation surface, not the monitoring architecture itself.
+
 ## What ships in this MVP
 
 ### AppPort service
@@ -98,26 +102,40 @@ and notification surface, not the durable monitoring authority. Closing the brow
 does not destroy monitor state or already-created notifications.
 
 ```text
-             Durable Monitor
-                   │
-          ┌────────┴────────┐
-          │                 │
-     Observation         Notification
-       executor             event
-          │                 │
-      Browser          AppPort Services
-          │                 │
-          ▼           ┌─────┼─────┐
-     Observation      ▼     ▼     ▼
-          │        Browser Email  Attn
-          ▼
-        FeltDB
-     evidence/state
+                 Monitor
+                    │
+                    ▼
+            Executor Registry
+               │          │
+               ▼          ▼
+          Browser      Service
+               │          │
+               └────┬─────┘
+                    ▼
+             ObservationResult
+                    │
+                    ▼
+             Monitor Evaluation
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+       FeltDB             AppPort
+       Evidence           Events
 ```
+
+## Executor matrix
+
+| Execution mode | Executor | Authentication boundary |
+| --- | --- | --- |
+| `authenticated_browser` | Browser extension | Browser session / authenticated extension context |
+| `service` | HTTP/API service | Service authorization context |
 
 ## Limitation in this MVP
 
-Scheduled checks fetch and evaluate ordinary server-rendered HTML pages. Some heavily client-rendered JavaScript applications may require a richer execution environment or additional extraction strategies in a follow-up iteration.
+The initial service executor can observe HTTP/API responses and ordinary
+server-rendered HTML pages, but some heavily client-rendered JavaScript
+applications may still require a richer execution environment in a follow-up
+iteration.
 
 ## Tests
 
@@ -132,8 +150,9 @@ Users can monitor pages that require an existing browser login. The extension ob
 ### How it Works
 
 1. **Authentication Detection**: When creating a monitor or performing check-ups, the extension analyzes page characteristics to distinguish between `public`, `authenticated`, `authentication_required` (redirected to login), or `unknown` auth states. The legacy `required` value is accepted only at compatibility boundaries and normalized immediately.
-2. **Scheduled Checks**: If a monitor uses the `authenticated_browser` execution mode, the AppPort Service retains the durable schedule and resolves the browser executor when a check is due.
-3. **Browser Integration**: The service worker sends a lightweight executor heartbeat and periodically polls for pending observations. It opens or activates an appropriate browser tab under the user's existing authenticated context, triggers a content script to run the check safely, and submits the structured observation back to AppPort Services.
+2. **Scheduled Checks**: AppPort retains the durable schedule. When a check is due, the monitor resolves an executor through the registry rather than hard-coding browser behavior.
+3. **Browser Integration**: If a monitor uses `authenticated_browser`, the service worker sends a lightweight executor heartbeat and periodically polls for pending observations. It opens or activates an appropriate browser tab under the user's existing authenticated context, triggers a content script to run the check safely, and submits the structured observation back to AppPort Services.
+4. **Service Integration**: If a monitor uses `service`, AppPort performs the HTTP/API request directly, applies the configured request parameters, resolves any allowed authorization context at execution time, and records the normalized observation or operational evidence.
 
 ### Security Model & Safety Boundaries
 
@@ -145,6 +164,7 @@ Our architecture enforces a strict security boundary to protect user credentials
 * **Separate execution state**: Monitor lifecycle (`active`, `paused`, `deleted`) is separate from execution state (`available`, `authentication_required`, `unavailable`, `error`). A closed browser records `unavailable` evidence without pausing or deleting the monitor.
 * **Authentication Expiration Protection**: Only an actual authenticated browser observation can transition execution state to `authentication_required`; failed authentication attempts are blocked from becoming target-page observations, preventing false condition matches.
 * **Browser credential boundary**: The browser owns the authenticated website session. The extension observes the resulting page but never collects or transmits passwords, cookies, authorization headers, refresh tokens, or other website credentials.
+* **Service credential boundary**: Service monitors store only an authorization-context reference. Raw service credentials never enter durable monitor state, observations, trigger events, notifications, logs, or sanitized executor errors.
 
 An unavailable executor never creates a `{ triggered: false }` observation. It creates operational evidence with
 `executionState: "unavailable"` and the durable schedule remains authoritative for the next check.

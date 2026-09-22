@@ -260,14 +260,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const draft = await captureMonitorDraft(condition);
           
           const authState = normalizeAuthState(draft.authentication ?? 'public');
+          const executionMode = (authState === 'authenticated' || authState === 'authentication_required')
+            ? 'authenticated_browser'
+            : 'service';
           const initialObservation = {
             ...draft.initialObservation,
             authentication: authState,
             observedAt: new Date().toISOString(),
             url: draft.url,
-            execution: authState === 'authenticated' || authState === 'authentication_required'
-              ? 'authenticated_browser'
-              : 'public'
+            execution: executionMode,
+            executionMode
           };
           const observationMode = (authState === 'authenticated' || authState === 'authentication_required')
             ? 'authenticated_browser'
@@ -283,7 +285,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             initialObservation,
             notes: draft.notes || '',
             observationMode,
-            executionMode: observationMode === 'authenticated_browser' ? 'authenticated_browser' : undefined,
+            execution: { mode: executionMode },
+            executionMode,
             authenticationState: authState
           });
           sendResponse({ ok: true, data: created });
