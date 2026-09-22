@@ -70,7 +70,7 @@ function normalizeReference(reference, fallback, type) {
     return {
       type: reference.type || type,
       id: reference.id,
-      ...(reference.locator ? { locator: reference.locator } : {}),
+      ...(reference.locator ? { locator: safeLocator(reference.locator) } : {}),
       ...(reference.provider ? { provider: reference.provider } : {})
     };
   }
@@ -78,8 +78,28 @@ function normalizeReference(reference, fallback, type) {
   return { type, id: value };
 }
 
+function safeLocator(locator) {
+  if (!locator) {
+    return locator;
+  }
+  try {
+    const url = new URL(locator);
+    url.username = '';
+    url.password = '';
+    const sensitive = /(?:token|secret|password|passwd|auth|session|cookie|api[_-]?key|access[_-]?token)/i;
+    for (const name of [...url.searchParams.keys()]) {
+      if (sensitive.test(name)) {
+        url.searchParams.set(name, '[redacted]');
+      }
+    }
+    return url.toString();
+  } catch {
+    return String(locator);
+  }
+}
+
 function observationReferences(monitor, observation, executionMode) {
-  const locator = observation.url ?? monitor.url;
+  const locator = safeLocator(observation.url ?? monitor.url);
   const host = (() => {
     try {
       return new URL(locator).hostname;
@@ -288,6 +308,7 @@ async function recordObservation(application, monitor, observation, evaluation, 
   const canonicalObservation = {
     ...observation,
     id: observationId,
+    ...(observation.url ? { url: safeLocator(observation.url) } : {}),
     tenantId: monitor.tenantId,
     subject,
     observedAt,
