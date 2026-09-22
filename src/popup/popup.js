@@ -23,8 +23,8 @@ function renderMonitors(items) {
   monitorCountElement.textContent = `${items.length} active monitor${items.length === 1 ? '' : 's'}`;
   monitorListElement.innerHTML = items.length
     ? items.map((monitor) => {
-        const isAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
-        const statusText = isAuthRequired ? 'Sign-in required' : monitor.status;
+        const isAuthRequired = monitor.executionState === 'authentication_required' || monitor.status === 'AUTHENTICATION_REQUIRED';
+        const statusText = isAuthRequired ? 'Sign-in required' : monitor.executionState || monitor.status;
         const warningBox = isAuthRequired
           ? `<div class="auth-required-box" style="margin-top: 6px; padding: 6px 8px; background-color: #fef0c7; border: 1px solid #fec84b; border-radius: 4px; font-size: 11px; color: #b54708;">
                <strong>Sign-in required</strong><br>Open the page, sign in, and this monitor will continue automatically.

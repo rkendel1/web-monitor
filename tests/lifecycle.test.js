@@ -13,14 +13,16 @@ import { randomUUID } from 'node:crypto';
 // - 'POST /api/observations/submit'
 // Let's write a test that calls this route or tests the state transitions.
 
-import { createMonitorRoutes } from '../src/server/monitors.js';
+import { createMonitorRoutes, runMonitorCheck } from '../src/server/monitors.js';
 
 function createMockApp() {
   const store = {
     Monitors: new Map(),
     MonitorObservations: new Map(),
     PendingObservations: new Map(),
-    MonitorTriggeredEvents: new Map()
+    MonitorTriggeredEvents: new Map(),
+    MonitorExecutionEvidence: new Map(),
+    ObservationExecutorHeartbeats: new Map()
   };
 
   const notifications = [];
@@ -219,7 +221,8 @@ test('Session expiration lifecycle (ACTIVE -> AUTHENTICATION_REQUIRED -> notific
 
   // Verify monitor is AUTHENTICATION_REQUIRED and notification sent
   const monitorExpired = await app.state.collection('Monitors').get(monitorId);
-  assert.equal(monitorExpired.status, 'AUTHENTICATION_REQUIRED');
+  assert.equal(monitorExpired.status, 'active');
+  assert.equal(monitorExpired.executionState, 'authentication_required');
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, 'monitor.auth_expired');
   assert.equal(notifications[0].channel, 'browser');
@@ -308,7 +311,8 @@ test('Session expiration lifecycle with explicit authentication_required (ACTIVE
 
   // Verify monitor is AUTHENTICATION_REQUIRED and notification sent
   const monitorExpired = await app.state.collection('Monitors').get(monitorId);
-  assert.equal(monitorExpired.status, 'AUTHENTICATION_REQUIRED');
+  assert.equal(monitorExpired.status, 'active');
+  assert.equal(monitorExpired.executionState, 'authentication_required');
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, 'monitor.auth_expired');
 
@@ -461,4 +465,48 @@ test('Triggered notification preserves durable evidence and never includes obser
   assert.deepEqual(notifications[0].data.deliveryPolicy, { channels: ['browser'] });
   assert.equal(JSON.stringify(notifications[0]).includes('do-not-store'), false);
   assert.equal(store.MonitorTriggeredEvents.size, 1);
+});
+
+test('Unavailable browser executor records operational evidence without changing monitor lifecycle', async () => {
+  const { app, store } = createMockApp();
+  const monitorId = 'monitor-unavailable';
+  await app.state.collection('Monitors').insert({
+    id: monitorId,
+    tenantId: 'test-tenant',
+    ownerId: 'user-123',
+    url: 'https://example.com/private',
+    pageTitle: 'Private page',
+    condition: { type: 'text_appears', text: 'Ready' },
+    target: {},
+    status: 'active',
+    executionMode: 'authenticated_browser',
+    executionState: 'available'
+  }, monitorId);
+
+  await runMonitorCheck(app, {
+    id: 'job-unavailable',
+    payload: { monitorId }
+  });
+
+  const monitor = store.Monitors.get(monitorId);
+  assert.equal(monitor.status, 'active');
+  assert.equal(monitor.executionState, 'unavailable');
+  assert.equal(store.PendingObservations.size, 0);
+  assert.equal(store.MonitorObservations.size, 0);
+  assert.equal(store.MonitorExecutionEvidence.size, 1);
+  assert.equal([...store.MonitorExecutionEvidence.values()][0].reason, 'browser_unavailable');
+
+  await app.state.collection('ObservationExecutorHeartbeats').insert({
+    id: 'test-tenant:authenticated-browser',
+    tenantId: 'test-tenant',
+    executionMode: 'authenticated_browser',
+    executorId: 'authenticated-browser',
+    heartbeatAt: new Date(Date.now() + 10_000).toISOString()
+  }, 'test-tenant:authenticated-browser');
+  await runMonitorCheck(app, {
+    id: 'job-reconnected',
+    payload: { monitorId }
+  });
+  assert.equal(store.Monitors.get(monitorId).executionState, 'available');
+  assert.equal(store.PendingObservations.size, 1);
 });

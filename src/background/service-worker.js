@@ -107,14 +107,18 @@ async function pollPendingObservations() {
         console.error('Pending observation failed:', err);
         await appPortClient.submitObservation({
           pendingId: item.id,
-          observation: {
-            authentication: 'unknown',
-            observedAt: new Date().toISOString(),
-            url: item.url,
-            execution: 'authenticated_browser',
-            error: err.message
-          }
+          result: { kind: 'error', reason: err.message }
         });
+      }
+    }
+
+    async function sendExecutorHeartbeat() {
+      try {
+        if (await appPortClient.getConfig()) {
+          await appPortClient.heartbeat();
+        }
+      } catch (error) {
+        console.warn('Executor heartbeat failed', error);
       }
     }
   } catch (err) {
@@ -173,11 +177,13 @@ async function deliverBrowserNotifications() {
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(NOTIFICATION_ALARM, { periodInMinutes: 1 });
   void pollPendingObservations();
+  void sendExecutorHeartbeat();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create(NOTIFICATION_ALARM, { periodInMinutes: 1 });
   void pollPendingObservations();
+  void sendExecutorHeartbeat();
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -200,6 +206,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 // Periodically poll for pending observations every 10 seconds while service worker is active
 setInterval(pollPendingObservations, 10000);
+setInterval(sendExecutorHeartbeat, 10000);
 
 chrome.notifications.onClicked.addListener(async (notificationId) => {
   const stored = await chrome.storage.local.get(NOTIFICATION_LINKS_KEY);
@@ -276,6 +283,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             initialObservation,
             notes: draft.notes || '',
             observationMode,
+            executionMode: observationMode === 'authenticated_browser' ? 'authenticated_browser' : undefined,
             authenticationState: authState
           });
           sendResponse({ ok: true, data: created });

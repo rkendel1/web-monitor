@@ -132,8 +132,8 @@ Users can monitor pages that require an existing browser login. The extension ob
 ### How it Works
 
 1. **Authentication Detection**: When creating a monitor or performing check-ups, the extension analyzes page characteristics to distinguish between `public`, `authenticated`, `authentication_required` (redirected to login), or `unknown` auth states. The legacy `required` value is accepted only at compatibility boundaries and normalized immediately.
-2. **Scheduled Checks**: If a monitor is in `authenticated_browser` observation mode, the AppPort Service schedules check-up jobs by putting them in a queue of pending observations.
-3. **Browser Integration**: The service worker periodically polls for pending observations, opens or activates an appropriate browser tab under the user's existing authenticated context, triggers a content script to run the check safely, and submits the structured observation back to AppPort Services.
+2. **Scheduled Checks**: If a monitor uses the `authenticated_browser` execution mode, the AppPort Service retains the durable schedule and resolves the browser executor when a check is due.
+3. **Browser Integration**: The service worker sends a lightweight executor heartbeat and periodically polls for pending observations. It opens or activates an appropriate browser tab under the user's existing authenticated context, triggers a content script to run the check safely, and submits the structured observation back to AppPort Services.
 
 ### Security Model & Safety Boundaries
 
@@ -142,8 +142,12 @@ Our architecture enforces a strict security boundary to protect user credentials
 * **No Credentials Leakage**: The extension never requests, stores, or handles the target site's passwords, raw authentication cookies, or tokens.
 * **FeltDB and AppPort Isolation**: No cookies, site passwords, or authorization headers are ever transmitted to AppPort Services or written to FeltDB. All observation payloads are sanitized on the server before database write.
 * **Content Script Sandboxing**: Content scripts remain "dumb" and never receive AppPort API keys, access tokens, AuthBoundry credentials, or secrets. All authenticated calls to AppPort Services are made strictly by the service worker.
-* **Authentication Expiration Protection**: If a session expires, the monitor's state transitions to `AUTHENTICATION_REQUIRED` and the user is notified. Failed authentication attempts are blocked from becoming target-page observations, preventing false condition matches.
+* **Separate execution state**: Monitor lifecycle (`active`, `paused`, `deleted`) is separate from execution state (`available`, `authentication_required`, `unavailable`, `error`). A closed browser records `unavailable` evidence without pausing or deleting the monitor.
+* **Authentication Expiration Protection**: Only an actual authenticated browser observation can transition execution state to `authentication_required`; failed authentication attempts are blocked from becoming target-page observations, preventing false condition matches.
 * **Browser credential boundary**: The browser owns the authenticated website session. The extension observes the resulting page but never collects or transmits passwords, cookies, authorization headers, refresh tokens, or other website credentials.
+
+An unavailable executor never creates a `{ triggered: false }` observation. It creates operational evidence with
+`executionState: "unavailable"` and the durable schedule remains authoritative for the next check.
 
 ### Permission Model & Minimal Access
 
