@@ -4,7 +4,7 @@ This repository contains a minimal end-to-end MVP for an AppPort-backed web moni
 
 - a local AppPort service that persists monitors and observations in FeltDB-backed AppPort state
 - recurring AppPort jobs that fetch monitored pages and evaluate deterministic monitor conditions
-- AppPort notifications that the Chrome extension turns into browser notifications
+- durable AppPort notification events, with browser notifications as one delivery adapter
 - a Manifest V3 Chrome extension for creating, viewing, pausing, resuming, and deleting monitors
 
 ## What ships in this MVP
@@ -35,7 +35,7 @@ The extension provides:
 - current-page detection through a content script
 - a popup for configuring the AppPort endpoint and creating a monitor
 - an options page for viewing monitor history and lifecycle controls
-- a service worker that owns AppPort credentials and syncs AppPort notifications into Chrome notifications
+- a service worker that owns AppPort credentials and provides the Chrome notification adapter
 
 ## Supported MVP conditions
 
@@ -87,8 +87,13 @@ The command writes the extension credential to `.appport/extension-api-key.json`
 5. The service creates a durable monitor record plus an AppPort recurring job schedule
 6. AppPort persists monitor state and every observation through FeltDB
 7. When the condition transitions to true, AppPort creates a notification
-8. The extension service worker converts that AppPort notification into a Chrome notification
+8. The browser adapter in the extension converts that AppPort event into a Chrome notification
 9. Clicking the browser notification opens the monitored URL
+
+Notifications are durable AppPort events. Their creation is independent of delivery,
+so future adapters (such as email, webhook, or mobile delivery) can consume the same
+event without changing monitor evaluation or persistence. The extension's browser
+notification adapter is only one consumer of unread events.
 
 ## Limitation in this MVP
 

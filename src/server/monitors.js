@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { conditionLabel, normalizeInterval, parseConditionInput } from '../shared/conditions.js';
 import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateObservation, observeHtml } from './observation.js';
+import { createNotificationEvent } from './notifications.js';
 
 const MONITORS = 'Monitors';
 const OBSERVATIONS = 'MonitorObservations';
@@ -116,7 +117,7 @@ async function recordObservation(application, monitor, observation, evaluation, 
 
   const previouslyAuthRequired = monitor.status === 'AUTHENTICATION_REQUIRED';
   if (nextStatus === 'AUTHENTICATION_REQUIRED' && !previouslyAuthRequired) {
-    await application.notifications.create({
+    await createNotificationEvent(application, {
       tenantId: monitor.tenantId,
       recipient: monitor.ownerId,
       type: 'monitor.auth_expired',
@@ -130,14 +131,13 @@ async function recordObservation(application, monitor, observation, evaluation, 
         condition: conditionLabel(monitor.condition),
         status: 'AUTHENTICATION_REQUIRED'
       },
-      channel: 'browser'
     }, systemPrincipal(monitor.tenantId));
   }
 
   const previouslyTriggered = Boolean(monitor.lastEvaluation?.triggered);
   if (!options.skipNotification && !previouslyTriggered && evaluation.triggered && nextStatus !== 'AUTHENTICATION_REQUIRED') {
     const summaryValue = observation.numericValue != null ? `$${observation.numericValue}` : observation.valueText || conditionLabel(monitor.condition);
-    await application.notifications.create({
+    await createNotificationEvent(application, {
       tenantId: monitor.tenantId,
       recipient: monitor.ownerId,
       type: 'monitor.triggered',
@@ -151,7 +151,6 @@ async function recordObservation(application, monitor, observation, evaluation, 
         value: summaryValue,
         condition: conditionLabel(monitor.condition)
       },
-      channel: 'browser'
     }, systemPrincipal(monitor.tenantId));
   }
 }

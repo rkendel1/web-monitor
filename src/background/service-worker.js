@@ -122,7 +122,9 @@ async function pollPendingObservations() {
   }
 }
 
-async function syncNotifications() {
+// Browser notification adapter: durable AppPort events remain usable by other
+// consumers even when this extension is not installed or is offline.
+async function deliverBrowserNotifications() {
   const config = await appPortClient.getConfig();
   if (!config) {
     return { items: [] };
@@ -182,7 +184,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 
   try {
-    await syncNotifications();
+    await deliverBrowserNotifications();
   } catch (error) {
     console.warn('Notification sync failed', error);
   }
@@ -291,7 +293,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ ok: true, data: await appPortClient.deleteMonitor(message.id) });
           return;
         case 'APPPORT_SYNC_NOTIFICATIONS':
-          sendResponse({ ok: true, data: await syncNotifications() });
+          sendResponse({ ok: true, data: await deliverBrowserNotifications() });
           return;
         default:
           sendResponse({ ok: false, error: 'Unsupported message type' });
