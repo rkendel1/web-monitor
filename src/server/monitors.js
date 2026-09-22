@@ -254,7 +254,9 @@ async function createMonitor(application, tenantId, principal, input) {
     : null;
   const initialEvaluation = initialObservation?.authentication === 'authentication_required'
     ? { triggered: false, summary: 'Sign-in required' }
-    : input.initialEvaluation;
+    : initialObservation
+      ? evaluateObservation(monitor, initialObservation, null)
+      : input.initialEvaluation;
 
   if (initialObservation && initialEvaluation) {
     await recordObservation(application, { ...monitor, scheduleId: schedule.id }, initialObservation, initialEvaluation, {
