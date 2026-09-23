@@ -42,6 +42,10 @@ test('rejects unknown fields, invented operators, and executable selectors', () 
     ...draft,
     target: { ...draft.target, selector: 'javascript:alert(1)' }
   }), /executable content/);
+  assert.throws(() => validateMonitorDraft({
+    ...draft,
+    condition: { field: 'price', operator: 'less_than', value: 'not-a-number' }
+  }), /does not match observed field type/);
 });
 
 test('returns clarification without inventing a monitor', async () => {

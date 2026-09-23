@@ -229,6 +229,18 @@ export function normalizeMonitorDraft(input) {
   if (conditionValue !== undefined && (typeof conditionValue === 'function' || typeof conditionValue === 'object' && conditionValue !== null && !Array.isArray(conditionValue))) {
     throw new Error('condition.value must be a primitive or array');
   }
+  const observedType = fields.find((field) => field.name === condition.field).type;
+  const values = Array.isArray(conditionValue) ? conditionValue : [conditionValue];
+  if (conditionValue !== undefined && values.some((value) => (
+    observedType === 'number' ? typeof value !== 'number' || !Number.isFinite(value)
+      : observedType === 'boolean' ? typeof value !== 'boolean'
+        : typeof value !== 'string'
+  ))) {
+    throw new Error(`condition.value does not match observed field type ${observedType}`);
+  }
+  if (operator === 'in' && !Array.isArray(conditionValue)) {
+    throw new Error('condition.value must be an array for in');
+  }
 
   const schedule = input.schedule;
   assertObject(schedule, 'schedule');
