@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { NOTIFICATION_DELIVERIES, routeAttentionEvent } from './notification-delivery.js';
 
 export const NOTIFICATION_CHANNELS = 'NotificationChannels';
 export const NOTIFICATION_ROUTES = 'NotificationRoutes';
@@ -41,12 +42,22 @@ function sortNewestFirst(items) {
   ));
 }
 
+function channelCapabilities(type) {
+  return type === 'app'
+    ? { type, surface: 'in_app', delivery: 'realtime', available: true, supported_event_types: ['important', 'critical'] }
+    : { type, surface: 'in_app', delivery: 'durable', available: type === 'web', supported_event_types: ['important', 'critical'] };
+}
+
+function withCapabilities(channel) {
+  return { ...channel, capabilities: channelCapabilities(channel.type) };
+}
+
 async function getChannel(application, id, account) {
   const channel = await collection(application, NOTIFICATION_CHANNELS).get(id);
   if (!channel || channel.account_id !== account) {
     throw Object.assign(new Error('Notification channel not found'), { status: 404, code: 'NOT_FOUND' });
   }
-  return channel;
+  return withCapabilities(channel);
 }
 
 async function getRoute(application, id, account) {
@@ -58,6 +69,11 @@ async function getRoute(application, id, account) {
 }
 
 export async function createAttentionEvent(application, event) {
+  const existing = await collection(application, ATTENTION_EVENTS).get(event.id);
+  if (existing) {
+    await routeAttentionEvent(application, existing);
+    return existing;
+  }
   const created_at = event.created_at ?? timestamp();
   const id = event.id ?? randomUUID();
   const routes = await collection(application, NOTIFICATION_ROUTES).find({
@@ -68,7 +84,7 @@ export async function createAttentionEvent(application, event) {
   const channelIds = [];
   for (const route of routes) {
     const channel = await collection(application, NOTIFICATION_CHANNELS).get(route.channel_id);
-    if (channel?.account_id === event.account_id && channel.enabled !== false) {
+    if (channel?.account_id === event.account_id && channel.enabled === true) {
       channelIds.push(channel.id);
     }
   }
@@ -86,6 +102,7 @@ export async function createAttentionEvent(application, event) {
     created_at
   };
   await collection(application, ATTENTION_EVENTS).insert(attention, id);
+  await routeAttentionEvent(application, attention);
   return attention;
 }
 
@@ -97,7 +114,7 @@ export function createAccountRoutes(application) {
     const authenticated = requirePrincipal(principal);
     requireScope(authenticated, read);
     const account = accountId(tenantId, authenticated);
-    return { items: sortNewestFirst(await collection(application, NOTIFICATION_CHANNELS).find({ account_id: account })) };
+    return { items: sortNewestFirst(await collection(application, NOTIFICATION_CHANNELS).find({ account_id: account })).map(withCapabilities) };
   };
 
   const channelCreate = async ({ tenantId, principal, body }) => {
@@ -119,7 +136,7 @@ export function createAccountRoutes(application) {
       updated_at: created_at
     };
     await collection(application, NOTIFICATION_CHANNELS).insert(channel, channel.id);
-    return channel;
+    return withCapabilities(channel);
   };
 
   const channelRead = async ({ tenantId, principal, body, request, params }) => {
@@ -214,6 +231,54 @@ export function createAccountRoutes(application) {
     };
   };
 
+  const notificationList = async ({ tenantId, principal }) => {
+    const authenticated = requirePrincipal(principal);
+    requireScope(authenticated, read);
+    const account = accountId(tenantId, authenticated);
+    const deliveries = await collection(application, NOTIFICATION_DELIVERIES).find({ account_id: account });
+    const attention = collection(application, ATTENTION_EVENTS);
+    return {
+      items: sortNewestFirst(await Promise.all(deliveries.map(async (delivery) => ({
+        ...delivery,
+        attention: await attention.get(delivery.attention_event_id)
+      }))))
+    };
+  };
+
+  const notificationRead = async ({ tenantId, principal, body, request, params }) => {
+    const authenticated = requirePrincipal(principal);
+    requireScope(authenticated, write);
+    const account = accountId(tenantId, authenticated);
+    const id = params?.id ?? body?.id ?? new URL(request?.url ?? '/', 'http://web-monitor.local').searchParams.get('id');
+    const delivery = await collection(application, NOTIFICATION_DELIVERIES).get(id);
+    if (!delivery || delivery.account_id !== account) throw Object.assign(new Error('Notification delivery not found'), { status: 404, code: 'NOT_FOUND' });
+    const update = { read_at: delivery.read_at ?? timestamp(), updated_at: timestamp() };
+    await collection(application, NOTIFICATION_DELIVERIES).update(id, update);
+    return { ...delivery, ...update };
+  };
+
+  const notificationResolve = async ({ tenantId, principal, body, request, params }) => {
+    const authenticated = requirePrincipal(principal);
+    requireScope(authenticated, write);
+    const account = accountId(tenantId, authenticated);
+    const id = params?.id ?? body?.id ?? new URL(request?.url ?? '/', 'http://web-monitor.local').searchParams.get('id');
+    const delivery = await collection(application, NOTIFICATION_DELIVERIES).get(id);
+    if (!delivery || delivery.account_id !== account) throw Object.assign(new Error('Notification delivery not found'), { status: 404, code: 'NOT_FOUND' });
+    const update = { resolved_at: delivery.resolved_at ?? timestamp(), updated_at: timestamp() };
+    await collection(application, NOTIFICATION_DELIVERIES).update(id, update);
+    return { ...delivery, ...update };
+  };
+
+  const notificationGet = async ({ tenantId, principal, body, request, params }) => {
+    const authenticated = requirePrincipal(principal);
+    requireScope(authenticated, read);
+    const account = accountId(tenantId, authenticated);
+    const id = params?.id ?? body?.id ?? new URL(request?.url ?? '/', 'http://web-monitor.local').searchParams.get('id');
+    const delivery = await collection(application, NOTIFICATION_DELIVERIES).get(id);
+    if (!delivery || delivery.account_id !== account) throw Object.assign(new Error('Notification delivery not found'), { status: 404, code: 'NOT_FOUND' });
+    return { ...delivery, attention: await collection(application, ATTENTION_EVENTS).get(delivery.attention_event_id) };
+  };
+
   return {
     'GET /account/channels': channelList,
     'POST /account/channels': channelCreate,
@@ -230,6 +295,11 @@ export function createAccountRoutes(application) {
     'PATCH /account/notification-routes': routeUpdate,
     'DELETE /account/notification-routes': routeDelete,
     'GET /account/attention': attentionList,
+    'GET /account/notifications': notificationList,
+    'GET /account/notifications/:id': notificationGet,
+    'POST /account/notifications/:id/read': notificationRead,
+    'POST /account/notifications/:id/resolve': notificationResolve,
+    'GET /account/notification-capabilities': async () => ({ items: ['web', 'app'].map(channelCapabilities) }),
     'GET /api/account/channels': channelList,
     'POST /api/account/channels': channelCreate,
     'GET /api/account/channels/:id': channelRead,
@@ -244,6 +314,11 @@ export function createAccountRoutes(application) {
     'DELETE /api/account/notification-routes/:id': routeDelete,
     'PATCH /api/account/notification-routes': routeUpdate,
     'DELETE /api/account/notification-routes': routeDelete,
-    'GET /api/account/attention': attentionList
+    'GET /api/account/attention': attentionList,
+    'GET /api/account/notifications': notificationList,
+    'GET /api/account/notifications/:id': notificationGet,
+    'POST /api/account/notifications/:id/read': notificationRead,
+    'POST /api/account/notifications/:id/resolve': notificationResolve,
+    'GET /api/account/notification-capabilities': async () => ({ items: ['web', 'app'].map(channelCapabilities) })
   };
 }
