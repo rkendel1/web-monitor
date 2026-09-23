@@ -3,6 +3,7 @@ import { conditionLabel, normalizeInterval, parseConditionInput } from '../share
 import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateObservation } from './observation.js';
 import { createNotificationEvent } from './notifications.js';
+import { createAccountRoutes, createAttentionEvent } from './account.js';
 import { executeMonitor, SEMANTIC_DECISIONS, WEB_OBSERVATIONS } from './semantic-monitor.js';
 import {
   EXECUTION_MODES,
@@ -458,6 +459,20 @@ async function recordObservation(application, monitor, observation, evaluation, 
       deliveryPolicy,
       notificationId: notification.id
     }, triggerId);
+    await createAttentionEvent(application, {
+      id: triggerId,
+      account_id: monitor.tenantId,
+      source_type: `${monitor.monitorType === 'semantic'
+        ? 'web'
+        : (monitor.targetType ?? 'web').replace(/_page$/, '')}_monitor`,
+      source_id: monitor.id,
+      event_type: evaluation.importance ?? 'important',
+      importance: evaluation.importance ?? 'important',
+      title: 'Monitor triggered',
+      summary: `${monitor.pageTitle}: ${summaryValue}`,
+      evidence_id: observationId,
+      created_at: observedAt
+    });
   }
 }
 
@@ -568,7 +583,21 @@ export async function runMonitorCheck(application, job) {
     return;
   }
   if (typeof monitor.target === 'string' || monitor.monitorType === 'semantic') {
-    return executeMonitor(application, monitor.id, { fetch: application.fetch });
+    const result = await executeMonitor(application, monitor.id, { fetch: application.fetch });
+    if (result.status === 'changed' && result.observation) {
+      await createAttentionEvent(application, {
+        id: stableId(`${monitor.tenantId}:${monitor.id}:${result.observation.id}:attention`),
+        account_id: monitor.tenantId,
+        source_type: 'web_monitor',
+        source_id: monitor.id,
+        event_type: result.decision?.decision?.importance ?? 'important',
+        importance: result.decision?.decision?.importance ?? 'important',
+        title: monitor.name ?? 'Web monitor changed',
+        summary: result.decision?.rationale ?? 'A monitored webpage changed.',
+        evidence_id: result.observation.id
+      });
+    }
+    return result;
   }
 
   const executionMode = resolveExecutionMode(monitor);
@@ -898,6 +927,7 @@ export function createMonitorRoutes(application) {
   };
   return {
     ...routes,
+    ...createAccountRoutes(application),
     'GET /monitors': routes['GET /api/monitors'],
     'POST /monitors': routes['POST /api/monitors'],
     'PATCH /monitors': routes['PATCH /api/monitors'],
