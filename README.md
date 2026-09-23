@@ -53,6 +53,17 @@ The extension provides:
 
 These map to deterministic structured condition types; arbitrary AI reasoning is intentionally out of scope.
 
+## Local monitor intent compiler
+
+The shared `src/shared/monitor-intent.js` module can use a browser-local WebLLM
+runtime to compile a natural-language request into a strict `MonitorDraft`.
+The compiler validates and normalizes model output before it can be passed to
+monitor creation; it never creates monitors, executes observations, evaluates
+conditions, or receives credentials. If the local model is unavailable it
+raises an explicit capability error rather than sending the request to a
+remote provider. Ambiguous requests return a clarification instead of an
+invented monitor.
+
 ## Run the AppPort service
 
 ```bash
