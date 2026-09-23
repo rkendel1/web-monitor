@@ -3,6 +3,7 @@ import { conditionLabel, normalizeInterval, parseConditionInput } from '../share
 import { normalizeAuthState } from '../shared/auth-detection.js';
 import { evaluateObservation } from './observation.js';
 import { createNotificationEvent } from './notifications.js';
+import { executeMonitor, SEMANTIC_DECISIONS, WEB_OBSERVATIONS } from './semantic-monitor.js';
 import {
   EXECUTION_MODES,
   EXECUTION_STATES,
@@ -470,13 +471,22 @@ async function createMonitor(application, tenantId, principal, input) {
     id: monitorId,
     tenantId,
     ownerId: principal.principalId,
-    url: input.url,
-    pageTitle: input.title,
+    url: input.url ?? input.target,
+    name: input.name ?? input.title ?? input.description ?? input.url ?? input.target,
+    pageTitle: input.title ?? input.name,
+    targetType: input.targetType ?? 'web_page',
+    description: input.description ?? input.notes ?? '',
+    instructions: input.instructions ?? input.conditionInput ?? '',
+    cadence: input.cadence ?? input.schedule,
+    enabled: input.enabled !== false,
+    monitorType: typeof input.target === 'string' && (input.description || input.instructions)
+      ? 'semantic'
+      : undefined,
     conditionInput: input.conditionInput,
     condition: input.initialObservation?.valueText && condition.type === 'value_changes'
       ? { ...condition, initialValue: input.initialObservation.valueText }
       : condition,
-    target: input.target ?? {},
+    target: typeof input.target === 'string' ? {} : input.target ?? {},
     scheduleInterval,
     status: 'active',
     notes: input.notes ?? '',
@@ -557,6 +567,9 @@ export async function runMonitorCheck(application, job) {
   if (!monitor || monitor.deletedAt || monitor.status === 'paused') {
     return;
   }
+  if (typeof monitor.target === 'string' || monitor.monitorType === 'semantic') {
+    return executeMonitor(application, monitor.id, { fetch: application.fetch });
+  }
 
   const executionMode = resolveExecutionMode(monitor);
   const executor = createExecutorRegistry(application).resolve(executionMode);
@@ -615,7 +628,7 @@ export async function runMonitorCheck(application, job) {
 }
 
 export function createMonitorRoutes(application) {
-  return {
+  const routes = {
     'GET /api/session': async ({ principal }) => {
       const authenticated = requirePrincipal(principal);
       return {
@@ -782,6 +795,52 @@ export function createMonitorRoutes(application) {
       requireScope(authenticated, 'monitors.write');
       return createMonitor(application, tenantId, authenticated, body ?? {});
     },
+    'POST /api/monitors/run': async ({ tenantId, principal, body }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.write');
+      const monitor = await getMonitor(application, tenantId, authenticated.principalId, body?.id);
+      return executeMonitor(application, monitor.id);
+    },
+    'PATCH /api/monitors': async ({ tenantId, principal, body }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.write');
+      const monitor = await getMonitor(application, tenantId, authenticated.principalId, body?.id);
+      const allowed = ['name', 'description', 'instructions', 'cadence', 'enabled', 'url', 'targetType'];
+      const update = Object.fromEntries(Object.entries(body ?? {}).filter(([key]) => allowed.includes(key)));
+      if (update.enabled === false) update.status = 'paused';
+      if (update.enabled === true && monitor.status === 'paused') update.status = 'active';
+      update.updatedAt = new Date().toISOString();
+      await collection(application, MONITORS).update(monitor.id, update);
+      return { ...monitor, ...update };
+    },
+    'DELETE /api/monitors': async ({ tenantId, principal, body, request }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.write');
+      const id = body?.id ?? parseUrlQuery(request?.url, 'id');
+      const monitor = await getMonitor(application, tenantId, authenticated.principalId, id);
+      await collection(application, MONITORS).update(monitor.id, {
+        enabled: false, status: 'deleted', deletedAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      });
+      return { ok: true };
+    },
+    'GET /api/monitors/observations': async ({ tenantId, principal, request }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.read');
+      const monitor = await getMonitor(application, tenantId, authenticated.principalId, parseUrlQuery(request.url, 'id'));
+      return { items: await collection(application, WEB_OBSERVATIONS).find({ monitorId: monitor.id }) };
+    },
+    'GET /api/monitors/decisions': async ({ tenantId, principal, request }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.read');
+      const monitor = await getMonitor(application, tenantId, authenticated.principalId, parseUrlQuery(request.url, 'id'));
+      const observations = await collection(application, WEB_OBSERVATIONS).find({ monitorId: monitor.id });
+      const items = [];
+      for (const observation of observations) {
+        const decision = await collection(application, SEMANTIC_DECISIONS).get(`${observation.id}:decision`);
+        if (decision) items.push(decision);
+      }
+      return { items };
+    },
     'POST /api/executors/heartbeat': async ({ tenantId, principal, body }) => {
       const authenticated = requirePrincipal(principal);
       requireScope(authenticated, 'monitors.write');
@@ -836,5 +895,13 @@ export function createMonitorRoutes(application) {
       });
       return { ok: true };
     }
+  };
+  return {
+    ...routes,
+    'GET /monitors': routes['GET /api/monitors'],
+    'POST /monitors': routes['POST /api/monitors'],
+    'PATCH /monitors': routes['PATCH /api/monitors'],
+    'DELETE /monitors': routes['DELETE /api/monitors'],
+    'POST /monitors/run': routes['POST /api/monitors/run']
   };
 }
