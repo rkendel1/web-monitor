@@ -200,4 +200,64 @@ app web-monitor {
     index monitor_idx using hash (monitorId)
     index observation_idx using hash (observationId)
   }
+
+  collection PendingObservations {
+    id: uuid
+    monitorId: uuid
+    tenantId: text
+    ownerId: text
+    url: url
+    condition: json
+    target: json
+    createdAt: datetime
+    jobId: uuid
+    index monitor_idx using hash (monitorId)
+  }
+
+  collection MonitorExecutionEvidence {
+    id: uuid
+    monitorId: uuid
+    tenantId: text
+    ownerId: text
+    executionMode: text
+    executionState: text
+    attemptedAt: datetime
+    reason: text
+    evidence: json
+    error: json
+    executorId: text
+    index monitor_idx using hash (monitorId)
+  }
+
+  collection ObservationExecutorHeartbeats {
+    id: text
+    tenantId: text
+    executionMode: text
+    executorId: text
+    heartbeatAt: datetime
+    index tenant_idx using hash (tenantId)
+  }
+
+  collection WebObservations {
+    id: text
+    monitorId: uuid
+    url: url
+    retrievedAt: datetime
+    contentHash: text
+    content: json
+    metadata: json
+    index monitor_idx using hash (monitorId)
+    index retrieved_idx using sorted (retrievedAt)
+  }
+
+  collection SemanticDecisions {
+    id: text
+    observationId: text
+    decision: json
+    rationale: text
+    confidence: number
+    model: text
+    createdAt: datetime
+    index observation_idx using hash (observationId)
+  }
 }
