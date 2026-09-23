@@ -260,4 +260,45 @@ app web-monitor {
     createdAt: datetime
     index observation_idx using hash (observationId)
   }
+
+  collection NotificationChannels {
+    id: uuid
+    account_id: text
+    type: text
+    name: text
+    configuration: json
+    enabled: boolean
+    created_at: datetime
+    updated_at: datetime
+    index account_idx using hash (account_id)
+    index account_enabled_idx using hash (account_id, enabled)
+  }
+
+  collection NotificationRoutes {
+    id: uuid
+    account_id: text
+    channel_id: uuid
+    event_type: text
+    enabled: boolean
+    created_at: datetime
+    updated_at: datetime
+    index account_idx using hash (account_id)
+    index channel_idx using hash (channel_id)
+  }
+
+  collection AttentionEvents {
+    id: uuid
+    account_id: text
+    source_type: text
+    source_id: uuid
+    event_type: text
+    importance: text
+    title: text
+    summary: text
+    evidence_id: text
+    channel_ids: json
+    created_at: datetime
+    index account_idx using hash (account_id)
+    index account_created_idx using sorted (account_id, created_at)
+  }
 }

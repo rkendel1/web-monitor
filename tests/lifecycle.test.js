@@ -23,7 +23,10 @@ function createMockApp(overrides = {}) {
     PendingObservations: new Map(),
     MonitorTriggeredEvents: new Map(),
     MonitorExecutionEvidence: new Map(),
-    ObservationExecutorHeartbeats: new Map()
+    ObservationExecutorHeartbeats: new Map(),
+    NotificationChannels: new Map(),
+    NotificationRoutes: new Map(),
+    AttentionEvents: new Map()
   };
 
   const notifications = [];

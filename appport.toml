@@ -38,7 +38,9 @@ scopes = [
   "monitors.read",
   "monitors.write",
   "notifications.read",
-  "notifications.write"
+  "notifications.write",
+  "account.read",
+  "account.write"
 ]
 
 [jobs]
