@@ -105,15 +105,21 @@ app web-monitor {
 
   collection NotificationDeliveries {
     id: uuid
-    tenant_id: text
-    notification_id: uuid
-    channel: text
+    account_id: text
+    attention_event_id: uuid
+    channel_id: uuid
     status: text
-    attempted_at: datetime
-    delivered_at: datetime
-    error: text
-    index tenant_idx using hash (tenant_id)
-    index notification_idx using hash (notification_id)
+    attempt_count: number
+    created_at: datetime
+    updated_at: datetime
+    sent_at: datetime
+    last_error: text
+    provider_reference: text
+    read_at: datetime
+    resolved_at: datetime
+    index account_idx using hash (account_id)
+    index attention_channel_idx using hash (attention_event_id, channel_id)
+    index account_updated_idx using sorted (account_id, updated_at)
   }
 
   collection NotificationAuditEvents {
