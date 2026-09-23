@@ -31,6 +31,8 @@ Custom monitor routes are exposed at:
 - `POST /api/monitors/pause`
 - `POST /api/monitors/resume`
 - `POST /api/monitors/delete`
+- `GET /api/observations?subject=<json>&source=<json>&limit=<n>&cursor=<cursor>`
+- `GET /api/observations/latest?subject=<json>&source=<json>`
 
 ### Chrome extension
 
@@ -100,6 +102,54 @@ the observation and evidence before AppPort creates channel delivery state. Brow
 notifications are only one delivery adapter; the browser is an observation executor
 and notification surface, not the durable monitoring authority. Closing the browser
 does not destroy monitor state or already-created notifications.
+
+## Canonical observations
+
+Executors produce observations. Monitors consume observations. An observation is a
+durable fact with a stable `id`, normalized `subject` and `source`, executor
+metadata, evidence, and authoritative provenance. Browser and service executors
+use `browser_page` and `http_request` respectively; submitted provenance is never
+trusted over the executor pipeline.
+
+Observation identity is deterministic for a scheduled execution: it is derived
+from the execution/job identity (or an explicit pending observation identity),
+executor, source, and subject. Retrying that execution therefore reuses the same
+observation ID, while a later execution gets a distinct ID even when its values
+are unchanged. Trigger IDs remain separate and are derived from the monitor,
+observation, and evaluation.
+
+Execution failures and authentication requirements are operational evidence, not
+observations. Canonical observations are stored independently in `Observations`;
+`MonitorObservations` retains monitor-specific evaluation history during the
+incremental migration.
+
+```text
+                       External Reality
+                              │
+                   ┌──────────┴──────────┐
+                   │                     │
+                Browser               Service
+                   │                     │
+                   └──────────┬──────────┘
+                              ▼
+                     ObservationResult
+                              │
+                              ▼
+                        Observation
+                 ├── subject / source
+                 ├── values / evidence
+                 └── provenance / executor
+                              │
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+                Evaluation            History
+                    │
+                    ▼
+                 Trigger
+                    │
+                    ▼
+               Notification
+```
 
 ```text
                  Monitor

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { normalizeText, parseCurrencyValue } from '../shared/conditions.js';
 import { observeHtml } from './observation.js';
 
@@ -144,9 +144,11 @@ export function createAuthenticatedBrowserExecutor(application, {
       const heartbeat = await collection(application).get(`${tenantId}:${executorId}`);
       return Boolean(heartbeat && Date.parse(heartbeat.heartbeatAt) + heartbeatTtlMs > Date.now());
     },
-    async observe(monitor) {
-      const pendingId = randomUUID();
-      await application.state.collection('PendingObservations').insert({
+    async observe(monitor, { jobId } = {}) {
+      const pendingId = jobId
+        ? createHash('sha256').update(`${monitor.id}:${jobId}:${executorId}`).digest('hex').slice(0, 32)
+        : randomUUID();
+      const pending = {
         id: pendingId,
         monitorId: monitor.id,
         tenantId: monitor.tenantId,
@@ -155,7 +157,13 @@ export function createAuthenticatedBrowserExecutor(application, {
         condition: monitor.condition,
         target: monitor.target,
         createdAt: new Date().toISOString()
-      }, pendingId);
+      };
+      const pendingCollection = application.state.collection('PendingObservations');
+      if (await pendingCollection.get(pendingId)) {
+        await pendingCollection.update(pendingId, pending);
+      } else {
+        await pendingCollection.insert(pending, pendingId);
+      }
       return observationResult({ pendingId });
     },
     executorId

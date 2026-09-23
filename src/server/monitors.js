@@ -6,6 +6,7 @@ import { createNotificationEvent } from './notifications.js';
 import {
   EXECUTION_MODES,
   EXECUTION_STATES,
+  authenticationRequiredResult,
   createAuthenticatedBrowserExecutor,
   createObservationExecutorRegistry,
   createServiceObservationExecutor,
@@ -14,6 +15,7 @@ import {
 
 const MONITORS = 'Monitors';
 const OBSERVATIONS = 'MonitorObservations';
+const CANONICAL_OBSERVATIONS = 'Observations';
 const PENDING_OBSERVATIONS = 'PendingObservations';
 const TRIGGER_EVENTS = 'MonitorTriggeredEvents';
 const EXECUTION_EVIDENCE = 'MonitorExecutionEvidence';
@@ -58,6 +60,76 @@ function observationTimestamp(item) {
   return item.observedAt ?? item.createdAt ?? new Date().toISOString();
 }
 
+function stableId(value) {
+  const digest = createHash('sha256').update(String(value)).digest('hex').slice(0, 32);
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
+}
+
+function normalizeReference(reference, fallback, type) {
+  if (reference && typeof reference === 'object' && typeof reference.id === 'string' && reference.id) {
+    return {
+      type: reference.type || type,
+      id: reference.id,
+      ...(reference.locator ? { locator: safeLocator(reference.locator) } : {}),
+      ...(reference.provider ? { provider: reference.provider } : {})
+    };
+  }
+  const value = String(reference || fallback);
+  return { type, id: value };
+}
+
+function safeLocator(locator) {
+  if (!locator) {
+    return locator;
+  }
+  try {
+    const url = new URL(locator);
+    url.username = '';
+    url.password = '';
+    const sensitive = /(?:token|secret|password|passwd|auth|session|cookie|api[_-]?key|access[_-]?token)/i;
+    for (const name of [...url.searchParams.keys()]) {
+      if (sensitive.test(name)) {
+        url.searchParams.set(name, '[redacted]');
+      }
+    }
+    return url.toString();
+  } catch {
+    return String(locator);
+  }
+}
+
+function observationReferences(monitor, observation, executionMode) {
+  const locator = safeLocator(observation.url ?? monitor.url);
+  const host = (() => {
+    try {
+      return new URL(locator).hostname;
+    } catch {
+      return locator;
+    }
+  })();
+  const subject = normalizeReference(
+    observation.subject ?? monitor.target?.subject,
+    host,
+    monitor.target?.subjectType ?? 'website'
+  );
+  if (!subject.locator && locator) {
+    subject.locator = locator;
+  }
+  const source = normalizeReference(
+    observation.source ?? monitor.target?.source,
+    host,
+    monitor.target?.sourceType ?? 'website'
+  );
+  if (!source.provider) {
+    source.provider = executionMode === EXECUTION_MODES.SERVICE ? 'service' : 'browser';
+  }
+  return { subject, source };
+}
+
+function observationMethod(executionMode) {
+  return executionMode === EXECUTION_MODES.SERVICE ? 'http_request' : 'browser_page';
+}
+
 function resolveExecutionMode(monitor) {
   return monitor.execution?.mode
     ?? monitor.executionMode
@@ -66,7 +138,7 @@ function resolveExecutionMode(monitor) {
       : EXECUTION_MODES.SERVICE);
 }
 
-function normalizeObservationPayload(monitor, observation) {
+export function normalizeObservationPayload(monitor, observation) {
   const executionMode = observation.executionMode
     ?? observation.execution
     ?? resolveExecutionMode(monitor);
@@ -129,6 +201,60 @@ async function listObservations(application, tenantId, ownerId, monitorId) {
   return [...items].sort((left, right) => observationTimestamp(right).localeCompare(observationTimestamp(left)));
 }
 
+function decodeCursor(cursor) {
+  if (!cursor) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString());
+    return value?.observedAt && value?.id ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function encodeCursor(item) {
+  return Buffer.from(JSON.stringify({
+    observedAt: observationTimestamp(item),
+    id: item.id
+  })).toString('base64url');
+}
+
+export async function queryObservations(application, tenantId, {
+  subject,
+  source,
+  from,
+  to,
+  limit = 50,
+  cursor
+} = {}) {
+  const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  const cursorValue = decodeCursor(cursor);
+  const items = await collection(application, CANONICAL_OBSERVATIONS).find({ tenantId });
+  const matches = items
+    .filter((item) => !subject || JSON.stringify(item.subject) === JSON.stringify(subject))
+    .filter((item) => !source || JSON.stringify(item.source) === JSON.stringify(source))
+    .filter((item) => !from || item.observedAt >= from)
+    .filter((item) => !to || item.observedAt <= to)
+    .sort((left, right) => {
+      const timestamp = observationTimestamp(right).localeCompare(observationTimestamp(left));
+      return timestamp || right.id.localeCompare(left.id);
+    })
+    .filter((item) => !cursorValue
+      || observationTimestamp(item) < cursorValue.observedAt
+      || (observationTimestamp(item) === cursorValue.observedAt && item.id < cursorValue.id));
+  const page = matches.slice(0, boundedLimit);
+  return {
+    items: page,
+    ...(matches.length > boundedLimit ? { nextCursor: encodeCursor(page.at(-1)) } : {})
+  };
+}
+
+export async function latestObservation(application, tenantId, options) {
+  const page = await queryObservations(application, tenantId, { ...options, limit: 1 });
+  return page.items[0] ?? null;
+}
+
 async function recordExecutionResult(application, monitor, result, options = {}) {
   const attemptedAt = options.attemptedAt ?? new Date().toISOString();
   const evidenceId = options.evidenceId ?? randomUUID();
@@ -168,19 +294,62 @@ function systemPrincipal(tenantId) {
 
 async function recordObservation(application, monitor, observation, evaluation, options = {}) {
   const observedAt = options.observedAt ?? new Date().toISOString();
-  const observationId = options.observationId ?? randomUUID();
+  const executionMode = resolveExecutionMode(monitor);
+  const { subject, source } = observationReferences(monitor, observation, executionMode);
+  const identityKey = options.identityKey
+    ?? (options.jobId
+      ? `${monitor.id}:${options.jobId}:${executionMode}:${source.type}:${source.id}:${subject.type}:${subject.id}`
+      : null)
+    ?? options.observationId
+    ?? `${executionMode}:${source.type}:${source.id}:${subject.type}:${subject.id}:${observedAt}`;
+  const observationId = options.observationId
+    ?? observation.id
+    ?? stableId(identityKey);
+  const canonicalObservation = {
+    ...observation,
+    id: observationId,
+    ...(observation.url ? { url: safeLocator(observation.url) } : {}),
+    tenantId: monitor.tenantId,
+    subject,
+    observedAt,
+    executor: {
+      mode: executionMode,
+      ...(options.executorId ? { id: options.executorId } : {})
+    },
+    source,
+    values: observation.values ?? {},
+    evidence: {
+      ...(observation.evidence ?? {}),
+      source,
+      observationMethod: observationMethod(executionMode),
+      observedAt,
+      ...(subject.locator ? { locator: subject.locator } : {})
+    },
+    provenance: {
+      observedAt,
+      executorMode: executionMode,
+      ...(options.executorId ? { executorId: options.executorId } : {}),
+      source,
+      observationMethod: observationMethod(executionMode)
+    }
+  };
+  const canonicalCollection = collection(application, CANONICAL_OBSERVATIONS);
+  if (await canonicalCollection.get(observationId)) {
+    return observationId;
+  }
   await collection(application, OBSERVATIONS).insert({
     id: observationId,
     monitorId: monitor.id,
     tenantId: monitor.tenantId,
     ownerId: monitor.ownerId,
     observedAt,
-    observation,
+    observation: canonicalObservation,
     evaluation,
     triggered: Boolean(evaluation.triggered),
     ...(options.jobId ? { jobId: options.jobId } : {}),
     source: options.source ?? 'job'
   }, observationId);
+  await canonicalCollection.insert(canonicalObservation, observationId);
 
   const nextStatus = monitorStatus(monitor, evaluation.triggered, observation);
 
@@ -188,12 +357,10 @@ async function recordObservation(application, monitor, observation, evaluation, 
     ...monitor,
     updatedAt: observedAt,
     lastCheckedAt: observedAt,
-    lastObservation: observation,
+    lastObservation: canonicalObservation,
     lastEvaluation: evaluation,
     status: nextStatus,
-    executionState: observation.authentication === 'authentication_required'
-      ? EXECUTION_STATES.AUTHENTICATION_REQUIRED
-      : EXECUTION_STATES.AVAILABLE,
+    executionState: EXECUTION_STATES.AVAILABLE,
     ...(evaluation.triggered ? { triggeredAt: observedAt } : {})
   };
 
@@ -231,7 +398,9 @@ async function recordObservation(application, monitor, observation, evaluation, 
   const previouslyTriggered = Boolean(monitor.lastEvaluation?.triggered);
   if (!options.skipNotification && !previouslyTriggered && evaluation.triggered
     && updatedMonitor.executionState !== EXECUTION_STATES.AUTHENTICATION_REQUIRED) {
-    const summaryValue = observation.numericValue != null ? `$${observation.numericValue}` : observation.valueText || conditionLabel(monitor.condition);
+    const summaryValue = canonicalObservation.values.numericValue ?? observation.numericValue != null
+      ? `$${canonicalObservation.values.numericValue ?? observation.numericValue}`
+      : canonicalObservation.values.valueText || observation.valueText || conditionLabel(monitor.condition);
     const deliveryPolicy = monitor.notificationPolicy ?? { channels: ['browser'] };
     const triggerId = createHash('sha256')
       .update(`${monitor.id}:${observationId}:${JSON.stringify(evaluation)}`)
@@ -424,7 +593,7 @@ export async function runMonitorCheck(application, job) {
     lastExecutionAttemptAt: new Date().toISOString()
   });
 
-  const result = await executor.observe({ ...monitor, executionMode });
+  const result = await executor.observe({ ...monitor, executionMode }, { jobId: job.id });
   if (result.kind !== 'observation') {
     await recordExecutionResult(application, monitor, result, { executorId: executor.executorId });
     return;
@@ -440,7 +609,8 @@ export async function runMonitorCheck(application, job) {
   await recordObservation(application, monitor, observation, evaluation, {
     observedAt: observation.observedAt || new Date().toISOString(),
     source: executionMode === EXECUTION_MODES.SERVICE ? 'service' : 'job',
-    jobId: job.id
+    jobId: job.id,
+    executorId: executor.executorId
   });
 }
 
@@ -468,6 +638,30 @@ export function createMonitorRoutes(application) {
         ownerId: authenticated.principalId
       });
       return { items };
+    },
+    'GET /api/observations': async ({ tenantId, principal, request }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.read');
+      const url = new URL(request.url ?? '/', 'http://web-monitor.local');
+      const subject = url.searchParams.get('subject');
+      const source = url.searchParams.get('source');
+      return queryObservations(application, tenantId, {
+        subject: subject ? JSON.parse(subject) : undefined,
+        source: source ? JSON.parse(source) : undefined,
+        from: url.searchParams.get('from') ?? undefined,
+        to: url.searchParams.get('to') ?? undefined,
+        limit: url.searchParams.get('limit') ?? undefined,
+        cursor: url.searchParams.get('cursor') ?? undefined
+      });
+    },
+    'GET /api/observations/latest': async ({ tenantId, principal, request }) => {
+      const authenticated = requirePrincipal(principal);
+      requireScope(authenticated, 'monitors.read');
+      const url = new URL(request.url ?? '/', 'http://web-monitor.local');
+      return { item: await latestObservation(application, tenantId, {
+        subject: url.searchParams.get('subject') ? JSON.parse(url.searchParams.get('subject')) : undefined,
+        source: url.searchParams.get('source') ? JSON.parse(url.searchParams.get('source')) : undefined
+      }) };
     },
     'POST /api/observations/submit': async ({ tenantId, principal, body }) => {
       const authenticated = requirePrincipal(principal);
@@ -505,7 +699,14 @@ export function createMonitorRoutes(application) {
         ...(numericValue !== undefined ? { numericValue } : {}),
         ...(present !== undefined ? { present } : {}),
         ...(selector !== undefined ? { selector } : {}),
-        ...(error !== undefined ? { error } : {})
+        ...(error !== undefined && typeof error === 'object'
+          ? {
+              error: {
+                ...(typeof error.code === 'string' ? { code: error.code } : {}),
+                message: 'Browser observation failed'
+              }
+            }
+          : {})
       };
 
       const pending = await collection(application, PENDING_OBSERVATIONS).get(pendingId);
@@ -526,13 +727,29 @@ export function createMonitorRoutes(application) {
       }
 
       if (sanitizedObservation.authentication === 'authentication_required') {
-        const evaluation = { triggered: false, summary: 'Sign-in required' };
-        await recordObservation(application, monitor, normalizedObservation, evaluation, {
-          observedAt: normalizedObservation.observedAt || new Date().toISOString(),
-          observationId: pendingId,
-          source: 'extension-polling',
-          jobId: pending.jobId
-        });
+        await recordExecutionResult(application, monitor, authenticationRequiredResult('authentication_required', {
+          executor: EXECUTION_MODES.AUTHENTICATED_BROWSER,
+          executionMode: EXECUTION_MODES.AUTHENTICATED_BROWSER
+        }), { executorId: 'authenticated-browser' });
+        if (monitor.executionState !== EXECUTION_STATES.AUTHENTICATION_REQUIRED) {
+          await createNotificationEvent(application, {
+            tenantId: monitor.tenantId,
+            recipient: monitor.ownerId,
+            type: 'monitor.auth_expired',
+            title: 'Sign-in required',
+            body: `${monitor.pageTitle}: Open the page, sign in, and this monitor will continue automatically.`,
+            priority: 'high',
+            channel: (monitor.notificationPolicy ?? { channels: ['browser'] }).channels.includes('browser') ? 'browser' : undefined,
+            source: { type: 'monitor', id: monitor.id },
+            data: {
+              monitorId: monitor.id,
+              url: monitor.url,
+              condition: conditionLabel(monitor.condition),
+              status: EXECUTION_STATES.AUTHENTICATION_REQUIRED,
+              deliveryPolicy: monitor.notificationPolicy ?? { channels: ['browser'] }
+            }
+          }, systemPrincipal(monitor.tenantId));
+        }
         await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
         return { ok: true };
       }
@@ -542,7 +759,8 @@ export function createMonitorRoutes(application) {
         observedAt: normalizedObservation.observedAt || new Date().toISOString(),
         observationId: pendingId,
         source: 'extension-polling',
-        jobId: pending.jobId
+        jobId: pending.jobId,
+        executorId: 'authenticated-browser'
       });
 
       await collection(application, PENDING_OBSERVATIONS).delete(pendingId);
