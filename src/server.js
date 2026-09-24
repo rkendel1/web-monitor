@@ -1,4 +1,4 @@
-import { appport } from '@appport/services';
+import { appport } from '@appport/runtime';
 import { createMonitorRoutes, runMonitorCheck } from './server/monitors.js';
 
 let application;

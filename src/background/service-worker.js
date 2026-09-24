@@ -1,7 +1,22 @@
+import { ExtensionServiceWorkerMLCEngineHandler } from '@mlc-ai/web-llm';
 import { appPortClient } from '../appport/client.js';
 import { ExtensionAuth } from '../appport/auth.js';
 import { normalizeAuthState } from '../shared/auth-detection.js';
 import { parseConditionInput } from '../shared/conditions.js';
+import { conditionFromMonitorDraft, validateMonitorDraft } from '../shared/monitor-intent.js';
+
+let webLlmHandler;
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'web_llm_service_worker') {
+    return;
+  }
+  if (!webLlmHandler) {
+    webLlmHandler = new ExtensionServiceWorkerMLCEngineHandler(port);
+  } else {
+    webLlmHandler.setPort(port);
+  }
+  port.onMessage.addListener(webLlmHandler.onmessage.bind(webLlmHandler));
+});
 
 const NOTIFICATION_ALARM = 'appport-notifications-sync';
 const NOTIFICATION_CACHE_KEY = 'shownNotifications';
@@ -88,6 +103,16 @@ async function executePendingObservation(item) {
   });
 }
 
+async function sendExecutorHeartbeat() {
+  try {
+    if (await appPortClient.getConfig()) {
+      await appPortClient.heartbeat();
+    }
+  } catch (error) {
+    console.warn('Executor heartbeat failed', error);
+  }
+}
+
 async function pollPendingObservations() {
   const config = await appPortClient.getConfig();
   if (!config) {
@@ -112,15 +137,6 @@ async function pollPendingObservations() {
       }
     }
 
-    async function sendExecutorHeartbeat() {
-      try {
-        if (await appPortClient.getConfig()) {
-          await appPortClient.heartbeat();
-        }
-      } catch (error) {
-        console.warn('Executor heartbeat failed', error);
-      }
-    }
   } catch (err) {
     console.warn('Pending observation poll failed', err);
   }
@@ -256,7 +272,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ ok: true, data: await appPortClient.getMonitor(message.id) });
           return;
         case 'APPPORT_CREATE_MONITOR': {
-          const condition = parseConditionInput(message.conditionInput);
+          const compiledDraft = message.draft ? validateMonitorDraft(message.draft) : null;
+          const condition = compiledDraft
+            ? conditionFromMonitorDraft(compiledDraft, message.conditionInput)
+            : parseConditionInput(message.conditionInput);
           const draft = await captureMonitorDraft(condition);
           
           const authState = normalizeAuthState(draft.authentication ?? 'public');

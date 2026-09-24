@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MonitorIntentCapabilityError,
+  conditionFromMonitorDraft,
   createMonitorIntentCompiler,
   normalizeMonitorDraft,
   validateMonitorDraft
@@ -30,6 +31,16 @@ test('normalizes and validates a strict MonitorDraft', () => {
     ...draft,
     condition: { field: 'availability', operator: 'equals', value: true }
   }).condition, { field: 'availability', operator: 'equals', value: true });
+});
+
+test('converts a validated model draft into an executable monitor condition', () => {
+  assert.deepEqual(conditionFromMonitorDraft(draft, 'price below 500'), {
+    type: 'numeric_threshold',
+    target: 'price',
+    operator: 'lt',
+    value: 500,
+    raw: 'price below 500'
+  });
 });
 
 test('rejects unknown fields, invented operators, and executable selectors', () => {

@@ -5,6 +5,9 @@
   "version": "1.0.0",
   "permissions": ["activeTab", "alarms", "notifications", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' data: http: https:"
+  },
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"

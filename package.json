@@ -5,12 +5,19 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "npm run build:extension",
+    "build:extension": "node scripts/build-extension.js",
     "start": "node src/server.js",
     "create:api-key": "node scripts/create-api-key.js",
     "test": "node --test"
   },
   "dependencies": {
-    "@appport/services": "0.4.3",
+    "@appport/runtime": "0.4.4",
+    "@appport/services": "0.4.4",
+    "@mlc-ai/web-llm": "0.2.85",
     "cheerio": "1.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

@@ -15,7 +15,8 @@ observation surface, not the monitoring architecture itself.
 
 ### AppPort service
 
-The local service uses `@appport/services` for:
+The local service starts through `@appport/runtime`, backed by
+`@appport/services`, for:
 
 - API key authentication
 - recurring jobs and schedules
@@ -55,8 +56,10 @@ These map to deterministic structured condition types; arbitrary AI reasoning is
 
 ## Local monitor intent compiler
 
-The shared `src/shared/monitor-intent.js` module can use a browser-local WebLLM
-runtime to compile a natural-language request into a strict `MonitorDraft`.
+The extension runs `Qwen2.5-0.5B-Instruct` locally with WebLLM and WebGPU to
+compile a natural-language request into a strict `MonitorDraft`. The model is
+downloaded on first use and cached by WebLLM; prompts and page context stay in
+the browser.
 The compiler validates and normalizes model output before it can be passed to
 monitor creation; it never creates monitors, executes observations, evaluates
 conditions, or receives credentials. If the local model is unavailable it
@@ -83,12 +86,28 @@ npm run create:api-key
 
 The command writes the extension credential to `.appport/extension-api-key.json` and prints the local file path. Use the `tenantId` and `secret` from that local file when configuring the extension.
 
-## Load the unpacked extension
+## Build and load the extension
+
+The browser code uses native JavaScript modules, so it does not need a bundler.
+Build a clean unpacked extension directory with:
+
+```bash
+npm run build
+```
+
+The build validates the manifest and browser JavaScript, then writes:
+
+- `dist/extension` — unpacked extension for local development
+- `dist/web-monitor-extension.zip` — packaged extension for distribution
+
+Both artifacts include the AppPort application contracts (`appport.toml` and
+`feltdb.flow`) plus the bundled browser-local WebLLM runtime. Server source,
+tests, and Node dependencies are intentionally excluded.
 
 1. Open Chrome and go to `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
-4. Select this repository root (`/home/runner/work/web-monitor/web-monitor`)
+4. Select this repository's `dist/extension` directory
 5. Open the extension popup
 6. Enter:
    - Service URL: `http://127.0.0.1:8787`

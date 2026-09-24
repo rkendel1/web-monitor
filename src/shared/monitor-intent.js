@@ -48,15 +48,44 @@ export const monitorDraftSchema = Object.freeze({
       type: 'object',
       additionalProperties: false,
       required: ['kind', 'locator'],
-      properties: { kind: { const: 'web_page' }, locator: { type: 'string', format: 'uri' } }
+      properties: {
+        kind: { const: 'web_page' },
+        locator: { type: 'string', format: 'uri' },
+        selector: { type: 'string' },
+        label: { type: 'string' },
+        valuePath: { type: 'string' }
+      }
     },
     observation: {
       type: 'object',
       additionalProperties: false,
       required: ['fields'],
-      properties: { fields: { type: 'array', items: { type: 'object', additionalProperties: false } } }
+      properties: {
+        fields: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'type'],
+            properties: {
+              name: { type: 'string' },
+              type: { enum: [...OBSERVATION_TYPES] }
+            }
+          }
+        }
+      }
     },
-    condition: { type: 'object', additionalProperties: false, required: ['field', 'operator'] },
+    condition: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['field', 'operator'],
+      properties: {
+        field: { type: 'string' },
+        operator: { enum: [...CONDITION_OPERATORS, ...Object.keys(OPERATOR_ALIASES)] },
+        value: {}
+      }
+    },
     schedule: {
       type: 'object',
       additionalProperties: false,
@@ -69,8 +98,23 @@ export const monitorDraftSchema = Object.freeze({
       required: ['mode'],
       properties: { mode: { enum: [...EXECUTION_MODES] } }
     },
-    notificationPolicy: { type: 'object', additionalProperties: false },
-    clarification: { type: 'object', additionalProperties: false },
+    notificationPolicy: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        enabled: { type: 'boolean' },
+        channels: { type: 'array', items: { enum: ['in_app', 'browser'] } }
+      }
+    },
+    clarification: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['required', 'question'],
+      properties: {
+        required: { const: true },
+        question: { type: 'string' }
+      }
+    },
     confidence: { type: 'number', minimum: 0, maximum: 1 }
   }
 });
@@ -284,6 +328,41 @@ export function normalizeMonitorDraft(input) {
 
 export function validateMonitorDraft(input) {
   return normalizeMonitorDraft(input);
+}
+
+export function conditionFromMonitorDraft(input, raw = '') {
+  const draft = validateMonitorDraft(input);
+  if (draft.clarification?.required) {
+    throw new Error(draft.clarification.question);
+  }
+
+  const field = draft.observation.fields.find((item) => item.name === draft.condition.field);
+  const { operator, value } = draft.condition;
+  const label = draft.target.label ?? draft.condition.field;
+
+  if (field.type === 'number' && ['less_than', 'greater_than'].includes(operator)) {
+    return {
+      type: 'numeric_threshold',
+      target: label,
+      operator: operator === 'less_than' ? 'lt' : 'gt',
+      value,
+      raw
+    };
+  }
+  if (field.type === 'string' && ['contains', 'equals'].includes(operator)) {
+    return { type: 'text_appears', text: String(value), raw };
+  }
+  if (field.type === 'string' && ['not_contains', 'not_equals'].includes(operator)) {
+    return { type: 'text_disappears', text: String(value), raw };
+  }
+  if (operator === 'changed') {
+    return { type: 'value_changes', target: label, raw };
+  }
+  if (operator === 'exists') {
+    return { type: 'element_appears', element: 'element', text: draft.target.label ?? String(value ?? label), raw };
+  }
+
+  throw new Error(`The local model produced an unsupported monitor condition: ${field.type} ${operator}`);
 }
 
 function modelOutput(result) {
